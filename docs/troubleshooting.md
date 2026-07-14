@@ -1,167 +1,1229 @@
-# Troubleshooting
+# 문제 해결 기록
 
-## 1. Purpose
+## 1. 문서 목적
 
-This document records hardware and software issues found during development.
+본 문서는 자율주행 기반 지능형 주차 운영 시스템 개발 중 발생한 하드웨어·펌웨어·통신·인식·통합 문제를 기록하고, 재현 가능한 점검 순서를 정리하기 위한 문서이다.
 
-The goal is not only to fix problems, but also to keep evidence of the engineering process:
+문제 해결 기록은 다음 흐름으로 작성한다.
 
 ```text
-Problem → Cause Analysis → Action → Result
+문제 발생
+→ 재현 조건 확인
+→ 가능한 원인 분리
+→ 한 번에 한 항목만 변경
+→ 측정 및 재시험
+→ 결과 기록
 ```
 
-This record will be useful for the final report, presentation, GitHub portfolio, and interview explanation.
+본 문서의 목적은 단순히 문제를 해결하는 데 그치지 않고 다음 자료로 활용하는 것이다.
+
+- 최종 보고서
+- 발표 자료
+- GitHub 포트폴리오
+- 개발 회고
+- 면접 설명
+- 동일 문제 재발 방지
+
+실제로 확인하지 않은 원인은 확정 원인으로 기록하지 않는다.  
+확인 전에는 `추정`, 시험 중에는 `진행 중`, 해결 후에는 `해결`로 표시한다.
 
 ---
 
-## 2. Issue Log
+## 2. 문제 상태 정의
 
-| No. | Date | Issue | Status |
+| 상태 | 의미 |
+|---|---|
+| 확인 필요 | 현상만 확인되고 원인 분리가 시작되지 않음 |
+| 진행 중 | 원인 분석 또는 재시험 중 |
+| 부분 해결 | 일부 조건에서는 정상이나 재현 가능성이 남아 있음 |
+| 해결 | 원인과 조치가 검증됨 |
+| 보류 | 부품·장비·선행 작업이 필요함 |
+| 설계 변경 | 기존 구조를 폐기하고 다른 방식으로 전환함 |
+| 해당 없음 | 현재 최종 구조에서 더 이상 사용하지 않음 |
+
+---
+
+## 3. 현재 문제 요약
+
+| 번호 | 날짜 | 문제 | 현재 상태 | 핵심 조치 |
+|---:|---|---|---|---|
+| 1 | 2026-07-02 | 모터 테스트 중 퓨즈 단선 반복 | 진행 중 | 기존 MDD10A 사용 중단, MD10C로 변경 |
+| 2 | 2026-07-02 | DC-DC 컨버터 납땜부 이탈 | 진행 중 | 재납땜, 절연, 배선 장력 제거 |
+| 3 | 2026-07 | 모터드라이버와 모터를 연결했으나 바퀴가 회전하지 않음 | 확인 필요 | 전원 흐름과 출력 배선 단계별 점검 |
+| 4 | 2026-07 | Raspberry Pi·UART 구조가 최종 설계와 불일치 | 설계 변경 | Raspberry Pi 제거, 노트북–ESP32 Wi-Fi TCP로 변경 |
+
+---
+
+# 4. 문제 1: 모터 테스트 중 퓨즈 단선 반복
+
+## 4.1 발생 일자
+
+2026-07-02
+
+## 4.2 발생 상황
+
+모터 구동 시험 중 PWM 값을 높인 뒤 퓨즈가 단선됐다.
+
+납땜을 보완하고 멀티미터로 다시 점검하는 과정에서도 퓨즈 단선 문제가 반복됐다.
+
+## 4.3 가능한 원인
+
+| 가능한 원인 | 설명 | 확인 상태 |
+|---|---|---|
+| 기존 MDD10A 고장 | 내부 단락 또는 비정상 전류 가능성 | 고장 가능성 높음 |
+| 모터 시동전류 | 정지 상태에서 순간적으로 큰 전류 발생 가능 | 실측 필요 |
+| 높은 PWM 시험 | 낮은 단계 검증 없이 큰 출력 적용 | 시험 절차 개선 필요 |
+| 전원 입력 접촉 불량 | 간헐 접촉과 아크 발생 가능 | 재점검 필요 |
+| 납땜 불량 | 높은 접촉저항 또는 순간 단락 가능 | 재점검 필요 |
+| 모터 과부하 | 바닥 주행과 최대 조향 상태에서 부하 증가 | 조건별 시험 필요 |
+| 퓨즈 정격 부적합 | 정상 시동전류보다 낮을 가능성 | 전류 측정 후 판단 |
+
+## 4.4 적용한 조치
+
+- 기존 MDD10A 사용을 중단했다.
+- 최종 모터드라이버를 Cytron MD10C 1채널로 변경했다.
+- 임시 비교 시험용으로 BTS7960을 확보했다.
+- 모터 시험을 낮은 PWM부터 단계적으로 진행하기로 했다.
+- 바퀴를 공중에 띄운 상태에서 먼저 회전을 확인하도록 시험 순서를 수정했다.
+- 퓨즈 정격을 임의로 높이지 않고 실제 전류 측정 후 결정하기로 했다.
+
+## 4.5 재시험 순서
+
+```text
+1. 배터리 전압 확인
+2. 퓨즈 홀더 연속성 확인
+3. 메인 스위치 출력 확인
+4. MD10C 전원 입력 극성 확인
+5. ESP32–MD10C 공통 GND 확인
+6. 모터 출력선 단락 여부 확인
+7. 바퀴를 공중에 띄움
+8. 낮은 PWM부터 단계적으로 증가
+9. 단계마다 퓨즈·전압·발열 기록
+10. 바닥 저속 시험 진행
+```
+
+## 4.6 기록해야 할 값
+
+| 항목 | 값 |
+|---|---|
+| 배터리 전압 | TBD |
+| 퓨즈 정격 | TBD |
+| 모터 무부하 전류 | TBD |
+| 모터 시동전류 | TBD |
+| 바닥 직진 전류 | TBD |
+| 최대 조향 상태 전류 | TBD |
+| 퓨즈 단선 PWM | TBD |
+| MD10C 발열 | TBD |
+
+## 4.7 현재 결과
+
+MD10C 교체 이후의 재시험이 필요하다.
+
+현재 상태:
+
+```text
+진행 중
+```
+
+---
+
+# 5. 문제 2: DC-DC 컨버터 납땜부 이탈
+
+## 5.1 발생 일자
+
+2026-07-02
+
+## 5.2 발생 상황
+
+DC-DC 강하 컨버터에 납땜한 배선이 모듈 단자에서 이탈했다.
+
+## 5.3 가능한 원인
+
+| 가능한 원인 | 설명 |
+|---|---|
+| 납땜 강도 부족 | 단자와 전선에 납이 충분히 스며들지 않음 |
+| 배선 장력 | 짧거나 뻣뻣한 전선이 접합부를 당김 |
+| 모듈 미고정 | 모듈이 움직이며 납땜부에 반복 하중 발생 |
+| 진동 | 차량 주행과 부품 이동으로 접합부 피로 |
+| 절연재 의존 | 절연테이프가 기계적 고정을 대신함 |
+
+## 5.4 적용할 조치
+
+```text
+1. 손상 부위의 기존 납 제거
+2. 단자와 전선 피복 상태 확인
+3. 단자와 전선에 예비 납땜
+4. 충분한 접촉면으로 재납땜
+5. 멀티미터 연속성 확인
+6. 입력·출력 단락 확인
+7. 출력전압 재조정
+8. 열수축튜브로 절연
+9. 모듈과 배선을 각각 차체에 고정
+10. 납땜부에 직접 장력이 걸리지 않도록 여유 확보
+```
+
+## 5.5 절연 기준
+
+- 납땜부 1차 절연은 열수축튜브를 우선한다.
+- 절연테이프는 보조 수단으로 사용한다.
+- 모듈 전체를 완전히 감싸 방열을 막지 않는다.
+- 가변저항, 커넥터, 발열 부품은 접근 가능하도록 둔다.
+- 모서리 바닥면 일부에 테이프가 붙는 것은 가능하나, 도체 접촉 방지 목적 이상으로 과도하게 밀폐하지 않는다.
+
+## 5.6 현재 결과
+
+재납땜 후 출력전압과 부하 상태를 다시 확인해야 한다.
+
+현재 상태:
+
+```text
+진행 중
+```
+
+---
+
+# 6. 문제 3: 모터 배선 후 바퀴가 회전하지 않음
+
+## 6.1 발생 상황
+
+DC모터 전원선과 모터드라이버 출력선을 납땜했지만 바퀴가 회전하지 않았다.
+
+전류 전달이 정상적으로 되지 않거나, 모터드라이버 출력 또는 제어 신호에 문제가 있을 가능성이 있다.
+
+## 6.2 점검 원칙
+
+코드를 먼저 반복 수정하지 않는다.
+
+아래 순서대로 전원과 신호를 단계별로 확인한다.
+
+```text
+배터리
+→ 퓨즈
+→ 스위치
+→ MD10C 전원 입력
+→ ESP32–MD10C 공통 GND
+→ PWM·DIR 출력
+→ MD10C 모터 출력
+→ 모터 배선 접합부
+→ DC모터 자체
+```
+
+## 6.3 단계별 점검표
+
+| 단계 | 확인 항목 | 정상 기준 | 비정상일 때 조치 |
 |---:|---|---|---|
-| 1 | 2026-07-02 | Fuse blown during high PWM motor test | In progress |
-| 2 | 2026-07-02 | DC-DC converter solder joint disconnected | In progress |
+| 1 | 배터리 전압 | 3S 운용범위 내 | 배터리 충전·보호회로 확인 |
+| 2 | 퓨즈 연속성 | 도통 | 퓨즈 교체 후 단락 원인 확인 |
+| 3 | 스위치 출력 | ON 시 배터리 전압 | 스위치 배선 재확인 |
+| 4 | MD10C 전원 입력 | 배터리 전압 | 입력 극성·단자 확인 |
+| 5 | 공통 GND | ESP32와 MD10C 기준 공유 | GND 연결 보완 |
+| 6 | GPIO 25 PWM | duty 변화 | 코드·핀·주파수 확인 |
+| 7 | GPIO 26 DIR | 논리 변화 | 코드와 배선 확인 |
+| 8 | MD10C 출력 | 명령 시 출력 변화 | 드라이버 상태 확인 |
+| 9 | 모터선 연속성 | 양쪽 접합부 도통 | 재납땜·커넥터 교체 |
+| 10 | 모터 단독 상태 | 외부 정상전원에서 회전 | 모터 자체 불량 검토 |
+
+## 6.4 자주 발생하는 실수
+
+- ESP32 GND와 MD10C 제어 GND를 연결하지 않음
+- MD10C 전원 입력과 모터 출력 단자를 혼동함
+- PWM 핀과 DIR 핀을 반대로 연결함
+- 코드의 GPIO 번호와 실제 배선이 다름
+- DIR은 정상이나 PWM duty가 0임
+- 모터 출력선 납땜이 피복 위에만 붙어 있음
+- 퓨즈가 이미 단선된 상태임
+- 배터리 보호회로가 과전류로 차단된 상태임
+- 서보 동작으로 전압이 크게 떨어져 ESP32가 재부팅됨
+
+## 6.5 현재 결과
+
+원인을 확정하지 못했으므로 MD10C 기준으로 단계별 재시험이 필요하다.
+
+현재 상태:
+
+```text
+확인 필요
+```
 
 ---
 
-## 3. Issue 1: Fuse blown during high PWM motor test
+# 7. 문제 4: Raspberry Pi·UART 구조 제거
 
-## 3.1 Date
+## 7.1 기존 구조
 
-2026-07-02
+기존 저장소에는 다음 구조가 포함되어 있었다.
 
-## 3.2 Situation
+```text
+Raspberry Pi
+→ 카메라 처리
+→ UART 또는 USB Serial
+→ ESP32
+→ F / S / L / R / C 명령
+```
 
-During the motor driving test, the fuse was blown after increasing the PWM value.
+## 7.2 문제점
 
-The issue appeared after testing relatively high PWM values.
+- 카메라가 차량 외부에 설치된다.
+- 노트북이 이미 영상 인식과 상위 처리를 담당할 수 있다.
+- Raspberry Pi를 차량에 탑재하면 전원·공간·배선이 복잡해진다.
+- 단순 문자 명령으로는 waypoint·상태·재접속·다중 차량 처리가 어렵다.
+- 최종 설계와 저장소 구조가 일치하지 않았다.
 
-## 3.3 Possible Causes
+## 7.3 변경 결과
 
-| Possible Cause | Description |
+최종 구조:
+
+```text
+고정 카메라
+→ 노트북 상위 제어기
+↕ Wi-Fi TCP
+ESP32 하위 제어기
+→ MD10C·서보·엔코더
+```
+
+삭제 또는 폐기 대상:
+
+```text
+raspberry_pi/
+integrated/raspberry_pi_main/
+firmware_esp32/05_uart_receiver_test/
+```
+
+대체 구조:
+
+- Wi-Fi TCP 지속 연결
+- NDJSON 메시지
+- POSE_UPDATE
+- WAYPOINT
+- WAIT·GO·STOP·RESET
+- STATUS·ARRIVED
+- session_id·boot_id·seq
+
+현재 상태:
+
+```text
+설계 변경 완료
+```
+
+---
+
+# 8. 모터가 약하거나 특정 PWM에서만 움직이는 문제
+
+## 8.1 가능한 원인
+
+- PWM이 실제 정지마찰을 넘지 못함
+- 배터리 전압 저하
+- 모터 부하 증가
+- 조향이 최대각으로 걸려 구동 저항 증가
+- 배선 접촉저항
+- MD10C 입력전압 저하
+- PWM 주파수 부적절
+- 바퀴 또는 기어 간섭
+
+## 8.2 점검 순서
+
+```text
+바퀴 공중 무부하 시험
+→ 바닥 중앙 조향 시험
+→ 좌·우 조향 시험
+→ 배터리 전압 비교
+→ PWM별 전류·속도 기록
+```
+
+## 8.3 기록 항목
+
+- 바퀴가 회전하기 시작하는 PWM
+- 차량이 바닥에서 움직이기 시작하는 PWM
+- 중앙·좌회전·우회전 최소 PWM
+- 각 조건의 배터리 전압
+- 모터드라이버 발열
+- 소음과 진동
+
+PWM 값을 추정으로 확정하지 않고 실제 측정값을 `docs/test_log_summary.md`에 기록한다.
+
+---
+
+# 9. 서보 떨림·과열·중앙 불일치
+
+## 9.1 가능한 원인
+
+| 원인 | 설명 |
 |---|---|
-| Unstable B+ / B- connection | Loose power input to the motor driver may cause unstable current flow |
-| Sudden current spike | Motor startup or high PWM operation may create a current spike |
-| Weak solder joint | Poor soldering can increase resistance or cause intermittent contact |
-| Wiring vibration | Movement of the RC car may loosen temporary wiring |
-| Motor load increase | Actual floor driving requires more current than unloaded wheel testing |
+| 공급전압 불안정 | 서보 순간전류로 DC-DC 출력 저하 |
+| ESP32에서 직접 전원 공급 | 보드 전원 용량 부족 |
+| 공통 GND 누락 | PWM 기준 불일치 |
+| 기계적 한계 초과 | 서보가 계속 목표 위치를 만들려고 힘을 줌 |
+| PWM 범위 부적절 | 사용 서보의 안전범위를 벗어남 |
+| 조향 링크 간섭 | 바퀴·링크·차체가 물리적으로 걸림 |
 
-## 3.4 Action Plan
+## 9.2 점검 순서
 
-- Reinforce soldering joints
-- Recheck B+ and B- input connection
-- Check fuse holder connection
-- Check DC-DC converter soldering
-- Restart PWM test from low values
-- Increase PWM step by step
-- Record motor behavior and fuse status at each PWM value
+```text
+서보 링크 분리
+→ 중앙값 확인
+→ 작은 좌우 범위 시험
+→ 안전 최대값 확인
+→ 링크 재연결
+→ 바퀴 간섭 확인
+→ 모터와 동시 구동
+```
 
-## 3.5 Test Plan After Fix
+## 9.3 해결 기준
 
-| PWM | Test Condition | Expected Check |
-|---:|---|---|
-| 80 | Rear wheels lifted | Motor response |
-| 100 | Rear wheels lifted | Motor response |
-| 120 | Rear wheels lifted | Motor response |
-| 140 | On floor | Whether RC car moves |
-| 160 | On floor | Minimum driving candidate |
-| 180 | On floor | Stable driving candidate |
-| 200 | On floor | Fuse stability |
-| 220 | On floor | High PWM stability check |
-
-## 3.6 Result
-
-TBD
-
-## 3.7 Notes
-
-This issue should be linked with the PWM sweep test record in `docs/test_log_summary.md`.
+- 서보 전원은 별도 DC-DC에서 공급한다.
+- 서보 GND와 ESP32 GND는 공통으로 연결한다.
+- GPIO 27은 신호만 전달한다.
+- 좌우 기계적 한계보다 안쪽을 소프트웨어 제한값으로 사용한다.
+- 중앙값은 반복 시험 후 결정한다.
 
 ---
 
-## 4. Issue 2: DC-DC converter solder joint disconnected
+# 10. ESP32가 모터 또는 서보 동작 시 재부팅되는 문제
 
-## 4.1 Date
+## 10.1 증상
 
-2026-07-02
+- 시리얼 로그가 처음부터 다시 시작됨
+- Wi-Fi 연결이 반복적으로 끊김
+- 브라운아웃 메시지 발생
+- 모터 시동 또는 서보 최대 조향 시 재부팅
 
-## 4.2 Situation
+## 10.2 가능한 원인
 
-The soldered part of the DC-DC step-down converter was disconnected.
+- DC-DC 출력전류 부족
+- 모터 노이즈
+- 서보 순간전류
+- 공통 전원선의 전압강하
+- 접촉 불량
+- 배터리 전압 저하
+- 디커플링 부족
+- GND 배선 불안정
 
-## 4.3 Possible Causes
+## 10.3 점검 순서
 
-| Possible Cause | Description |
-|---|---|
-| Weak soldering | The solder joint may not have been mechanically strong enough |
-| Mechanical stress | Wire movement may have stressed the solder joint |
-| Module not fixed | A floating module can move during testing |
-| Wire tension | Short or stiff wire may pull the solder joint |
+```text
+ESP32 단독 부팅
+→ 서보만 구동
+→ 모터만 구동
+→ 모터·서보 동시 구동
+→ 각 단계의 5V 출력전압 측정
+```
 
-## 4.4 Action Plan
+## 10.4 조치 후보
 
-- Resolder the disconnected joint
-- Check the output voltage before reconnecting modules
-- Physically fix the converter to reduce movement
-- Avoid applying tension to the soldered wire
-- Recheck wiring after vibration or driving test
-
-## 4.5 Result
-
-TBD
-
----
-
-## 5. Debugging Principles
-
-- Do not test high PWM immediately after wiring changes.
-- Start from the lowest meaningful PWM value.
-- Change only one variable at a time.
-- Record both success and failure cases.
-- Take photos before and after wiring changes.
-- Record short videos of important tests.
-- Keep hardware tests and software changes linked by date.
+- ESP32와 서보 전원 분기 분리
+- 더 안정적인 DC-DC 컨버터 사용
+- 전원선 굵기와 접합부 보완
+- 컨버터 출력단 디커플링 검토
+- 모터 노이즈 억제 커패시터 검토
+- 모터 전원선과 로직선 분리 배치
+- 실제 재부팅 원인을 로그로 확인
 
 ---
 
-## 6. Troubleshooting Template
+# 11. Wi-Fi 연결이 되지 않는 문제
 
-Use this template for future issues.
+## 11.1 점검 순서
+
+```text
+SSID·비밀번호 확인
+→ ESP32가 2.4GHz 네트워크를 사용하는지 확인
+→ 노트북과 ESP32가 같은 네트워크인지 확인
+→ 노트북 방화벽 확인
+→ TCP 서버 IP와 포트 확인
+→ ESP32 시리얼 로그 확인
+```
+
+## 11.2 가능한 원인
+
+- SSID 또는 비밀번호 오류
+- 5GHz 전용 AP
+- 노트북 IP 변경
+- 서버가 실행되지 않음
+- 포트가 이미 사용 중
+- Windows 방화벽 차단
+- 공유기의 클라이언트 격리
+- ESP32 Wi-Fi 재연결 로직 오류
+
+## 11.3 기록 항목
+
+- ESP32 IP
+- 노트북 IP
+- 서버 포트
+- Wi-Fi RSSI
+- 연결 시도 횟수
+- 연결 소요시간
+- 실패 로그
+
+---
+
+# 12. TCP는 연결됐지만 명령이 처리되지 않는 문제
+
+## 12.1 우선 확인
+
+TCP 연결 성공과 애플리케이션 명령 처리 성공은 다르다.
+
+다음 순서로 확인한다.
+
+```text
+TCP 연결
+→ HELLO 전송
+→ HELLO_ACK 수신
+→ session_id 일치
+→ NDJSON 한 줄 완성
+→ JSON 파싱 성공
+→ 필수 필드 검증
+→ 현재 상태에서 명령 허용
+→ VehicleControlTask 전달
+→ STATUS 또는 COMMAND_RESULT 응답
+```
+
+## 12.2 가능한 원인
+
+- JSON 끝에 줄바꿈이 없음
+- 한 메시지가 여러 TCP 조각으로 분할됨
+- 여러 JSON이 한 번에 수신됐는데 한 개만 처리함
+- `car_id` 불일치
+- `session_id` 불일치
+- 필수 필드 누락
+- 잘못된 enum 값
+- 현재 상태에서 명령이 허용되지 않음
+- Queue가 가득 참
+- VehicleControlTask가 이벤트를 받지 못함
+
+## 12.3 필수 로그
+
+```text
+수신 시각
+원본 메시지 길이
+type
+car_id
+session_id
+seq
+파싱 결과
+검증 결과
+Queue 전달 결과
+최종 상태
+거절 사유
+```
+
+---
+
+# 13. NDJSON 파싱 오류
+
+## 13.1 증상
+
+- 첫 메시지만 처리됨
+- JSON 파싱이 간헐적으로 실패함
+- 메시지 두 개가 하나로 합쳐짐
+- 긴 메시지가 잘림
+
+## 13.2 올바른 수신 구조
+
+```text
+TCP 바이트 수신
+→ receiveBuffer 뒤에 추가
+→ 줄바꿈 검색
+→ 한 줄 추출
+→ JSON 파싱
+→ 처리한 줄 제거
+→ 남은 버퍼에서 반복
+```
+
+## 13.3 점검 항목
+
+- 송신 JSON 끝에 실제 `\n`이 포함됐는가
+- 문자열 `"\\n"`을 보낸 것이 아닌가
+- 부분 메시지를 버리지 않고 다음 수신까지 유지하는가
+- 한 번 수신에 여러 줄이 올 때 반복 처리하는가
+- 최대 메시지 길이 512byte 초과를 처리하는가
+- 잘못된 JSON 실행을 차단하는가
+
+## 13.4 테스트 케이스
+
+```text
+1. 완전한 JSON 한 줄
+2. JSON을 두 조각으로 분할
+3. JSON 세 줄을 한 번에 전송
+4. 줄바꿈 없는 메시지
+5. 잘못된 JSON
+6. 최대 크기 초과 메시지
+```
+
+---
+
+# 14. 동일 명령이 두 번 실행되는 문제
+
+## 14.1 원인
+
+- ACK 유실 후 같은 명령이 재전송됨
+- ESP32가 `seq`를 확인하지 않고 매번 실행함
+- 최근 명령 결과를 저장하지 않음
+- session 변경 후 이전 seq가 섞임
+
+## 14.2 처리 원칙
+
+```text
+같은 session_id
++ 같은 seq
++ 같은 payload
+→ 중복 실행 금지
+→ 이전 처리 결과 재전송
+```
+
+```text
+같은 session_id
++ 같은 seq
++ 다른 payload
+→ SEQ_CONFLICT
+→ 실행 금지
+```
+
+## 14.3 확인 항목
+
+- 재전송 시 동일 seq를 사용하는가
+- payload도 완전히 동일한가
+- ESP32가 최근 명령 fingerprint를 저장하는가
+- 중복 WAYPOINT가 주행을 처음부터 다시 시작시키지 않는가
+- 중복 STOP이 안전 상태를 유지하는가
+
+---
+
+# 15. 오래된 경로가 다시 적용되는 문제
+
+## 15.1 증상
+
+- 재경로 후 차량이 이전 waypoint로 이동함
+- 이전 route의 GO가 늦게 도착해 주행을 재개함
+- 이전 ARRIVED가 현재 waypoint 완료로 처리됨
+
+## 15.2 방어 규칙
+
+- 경로 재생성 시 `route_id`를 증가시킨다.
+- 현재 `route_id`보다 오래된 WAYPOINT를 거절한다.
+- GO는 현재 target의 route_id와 waypoint_id가 일치할 때만 허용한다.
+- ARRIVED는 event_id 중복 여부뿐 아니라 route_id도 확인한다.
+- WAIT·STOP·재접속 후 waypoint buffer를 정책에 따라 정리한다.
+
+## 15.3 올바른 재경로 절차
+
+```text
+WAIT
+→ WAITING 확인
+→ 현재 Pose 확인
+→ 기존 route 폐기
+→ 새 route_id 생성
+→ 새 WAYPOINT 전송
+→ WAITING 유지
+→ GO
+```
+
+---
+
+# 16. WAIT 후 차량이 다시 움직이지 않는 문제
+
+## 16.1 확인 순서
+
+```text
+현재 상태가 WAITING인가
+→ target_loaded가 true인가
+→ route_id가 일치하는가
+→ waypoint_id가 일치하는가
+→ 최신 Pose가 유효한가
+→ Pose timeout이 해제됐는가
+→ Safety Shield가 GO를 허용하는가
+→ ERROR·E-STOP·COMM_TIMEOUT이 아닌가
+```
+
+## 16.2 정상 동작
+
+WAIT는 target과 phase를 유지한다.
+
+그러나 다음 상황에서는 GO만으로 복구할 수 없다.
+
+- COMM_TIMEOUT
+- EMERGENCY_STOP
+- ERROR
+- SYNCING
+- target이 없는 상태
+- route가 교체됐으나 새 waypoint가 없는 상태
+
+---
+
+# 17. STOP 후 GO가 실행되는 문제
+
+STOP은 일반 정지가 아니라 잠금형 비상정지이다.
+
+정상 규칙:
+
+```text
+STOP
+→ safeStop()
+→ target 폐기
+→ waypoint buffer 폐기
+→ EMERGENCY_STOP
+```
+
+다음 명령은 거절해야 한다.
+
+```text
+EMERGENCY_STOP + GO
+→ REJECTED
+```
+
+복구:
+
+```text
+원인 제거
+→ RESET
+→ READY
+→ 현재 Pose에서 새 route 생성
+→ 새 WAYPOINT
+```
+
+STOP 이후 기존 target이 남거나 GO로 바로 출발하면 상태머신 구현 오류이다.
+
+---
+
+# 18. HEARTBEAT가 정상인데 COMM_TIMEOUT이 발생하는 문제
+
+## 18.1 가능한 원인
+
+- HEARTBEAT를 Queue 뒤에서 늦게 처리함
+- 카메라 Task와 heartbeat 송신을 같은 루프로 묶음
+- `last_link_rx_ms` 갱신 위치가 잘못됨
+- session이 다른 heartbeat를 무시함
+- 시간 비교에서 overflow 또는 단위 오류
+- CommunicationTask가 장시간 block됨
+
+## 18.2 설계 기준
+
+- HEARTBEAT는 카메라 파이프라인과 독립적으로 전송한다.
+- ESP32 CommunicationTask에서 즉시 처리한다.
+- 일반 Command Queue에 넣지 않는다.
+- 유효한 현재 session 메시지만 link timer를 갱신한다.
+- timeout 계산의 ms 단위를 통일한다.
+
+---
+
+# 19. POSE_UPDATE가 오는데 POSE_TIMEOUT이 발생하는 문제
+
+## 19.1 가능한 원인
+
+- `valid=false` Pose만 수신됨
+- `measurement_age_ms`가 이미 너무 큼
+- 오래된 pose_seq가 반복됨
+- 최신 Pose 저장 구조가 갱신되지 않음
+- timestamp 단위가 다름
+- 위치 또는 heading confidence 기준 미달
+
+## 19.2 확인 로그
+
+```text
+pose_seq
+frame_id
+valid
+x_cm
+y_cm
+heading_deg
+position_confidence
+heading_confidence
+measurement_age_ms
+ESP32 수신 후 pose_age_ms
+```
+
+## 19.3 정상 복구
+
+```text
+유효하고 신선한 Pose 재확보
+→ WAITING 유지
+→ 자동 출발 금지
+→ 노트북 GO
+→ MOVING
+```
+
+---
+
+# 20. 차량 Pose가 순간적으로 튀는 문제
+
+## 20.1 가능한 원인
+
+- YOLO bbox 오검출
+- 다른 차량과 tracking ID 교환
+- FRONT_CUSHION association 오류
+- Homography 캘리브레이션 오류
+- 카메라 흔들림
+- 맵 경계에서 왜곡 증가
+- 가림 또는 반사
+
+## 20.2 방어 방법
+
+- 한 프레임의 큰 좌표 점프를 즉시 신뢰하지 않는다.
+- 이전 Pose와 최대 이동 가능거리를 비교한다.
+- confidence와 freshness를 함께 확인한다.
+- 다중 프레임 연속성을 사용한다.
+- tracking_id와 car_id 연결 상태를 확인한다.
+- ALIGN·ENTRY·FINAL 단계에서는 더 엄격한 기준을 적용한다.
+
+## 20.3 기록 항목
+
+- 이전 Pose
+- 현재 Pose
+- 프레임 간 시간
+- 계산상 이동속도
+- 검출 confidence
+- heading_source
+- 원본 영상 프레임
+
+---
+
+# 21. Heading이 반대로 계산되는 문제
+
+## 21.1 가능한 원인
+
+- 차량 중심과 전방점 순서를 반대로 사용함
+- 영상 y축과 맵 y축 방향을 혼동함
+- Homography 전 픽셀 좌표로 각도를 계산함
+- 후진 이동 방향을 차량 heading으로 사용함
+- FRONT_CUSHION이 다른 차량과 연결됨
+
+## 21.2 올바른 계산
+
+Homography 이후 cm 좌표에서 계산한다.
+
+```text
+차량 중심 C = (x_c, y_c)
+전방점 F = (x_f, y_f)
+
+heading = atan2(y_f - y_c, x_f - x_c)
+```
+
+각도 기준:
+
+```text
+오른쪽 = 0°
+위쪽 = 90°
+왼쪽 = 180°
+아래쪽 = 270°
+```
+
+후진 시에도 차량 heading은 차체 전방 방향을 의미하며 이동 방향과 구분한다.
+
+---
+
+# 22. ARRIVED가 중복 처리되는 문제
+
+## 22.1 정상 동작
+
+```text
+ESP32 ARRIVED event_id=51
+→ 노트북이 waypoint 완료 처리
+→ EVENT_ACK event_id=51
+```
+
+ACK가 유실되면 ESP32는 같은 event_id로 재전송한다.
+
+노트북은 다음과 같이 처리해야 한다.
+
+```text
+이미 처리한 car_id + boot_id + event_id
+→ 완료 처리 반복 금지
+→ EVENT_ACK만 다시 전송
+```
+
+## 22.2 확인 항목
+
+- 이벤트 고유키에 boot_id가 포함되는가
+- 노트북에 처리 완료 이벤트 기록이 있는가
+- 재접속 후 동일 이벤트를 중복 완료 처리하지 않는가
+- 이전 route ARRIVED를 현재 route 완료로 반영하지 않는가
+
+---
+
+# 23. ARRIVED가 유실되는 문제
+
+TCP 연결 중이라도 애플리케이션 처리 전 연결이 끊길 수 있다.
+
+방어 구조:
+
+- ESP32는 pending ARRIVED를 저장한다.
+- EVENT_ACK까지 동일 event_id로 재전송한다.
+- TCP 재접속 후 같은 boot_id이면 HELLO에 pending_event_id를 포함한다.
+- 노트북이 이미 처리했다면 ACK만 다시 보낸다.
+- ESP32가 재부팅돼 boot_id가 바뀌면 노트북이 카메라로 실제 차량 상태를 재검증한다.
+
+---
+
+# 24. 동일 car_id가 두 개 연결되는 문제
+
+## 24.1 위험
+
+두 TCP 소켓이 같은 차량을 제어하면 오래된 session의 명령이 뒤늦게 적용될 수 있다.
+
+## 24.2 처리 규칙
+
+```text
+새로운 정상 HELLO 승인
+→ 새 session_id 발급
+→ 새 소켓을 활성 연결로 지정
+→ 이전 session 무효화
+→ 이전 소켓 메시지 거절
+```
+
+모든 state-changing 명령은 현재 활성 session과 일치해야 한다.
+
+STOP은 안전상 넓게 처리하되, 어떤 연결에서 왔는지 반드시 로그에 남긴다.
+
+---
+
+# 25. STATUS가 밀려 늦게 도착하는 문제
+
+## 25.1 원인
+
+- 주기 STATUS를 모두 Queue에 누적함
+- 송신 Task보다 생성 속도가 빠름
+- 로그 메시지가 상태 메시지를 막음
+- 네트워크가 느린데 과도한 주기로 전송함
+
+## 25.2 해결 기준
+
+- 주기 STATUS는 최신값 하나만 유지한다.
+- 과거 STATUS는 덮어쓴다.
+- 명령 결과 STATUS는 주기 STATUS보다 높은 우선순위를 갖는다.
+- ARRIVED·ERROR·E-STOP은 최우선 송신한다.
+- 송신 Queue 길이와 drop 횟수를 기록한다.
+
+권장 송신 우선순위:
+
+```text
+High:
+ARRIVED, ERROR, EMERGENCY_STOP, SYNC
+
+Medium:
+명령 결과 STATUS, READY, MOVING, WAITING
+
+Low:
+주기 STATUS, 엔코더, 일반 로그
+```
+
+---
+
+# 26. Low Queue가 처리되지 않는 문제
+
+## 26.1 정상 정책
+
+정상 운용에서는 일반 메시지 N개 처리 후 Low 메시지 1개를 확인한다.
+
+초기 후보:
+
+```text
+N = 3 또는 5
+```
+
+## 26.2 안전 예외
+
+다음 상태에서는 Low Queue가 늦어져도 안전 처리를 우선한다.
+
+- STOP 처리 중
+- WAIT 처리 중
+- EMERGENCY_STOP
+- ERROR
+- COMM_TIMEOUT
+- SYNCING
+
+## 26.3 방어 방법
+
+- Low Queue 최대 길이 제한
+- 오래된 진단 명령 TTL 적용
+- Queue overflow 횟수 기록
+- 정상 상태에서 일정 시간 이상 처리되지 않으면 경고 로그
+- 로그 생성량 제한
+
+---
+
+# 27. VehicleControlTask가 멈추는 문제
+
+## 27.1 위험
+
+VehicleControlTask는 모터·서보 출력과 상태머신의 유일한 소유자이므로 정지하면 안전 문제가 발생할 수 있다.
+
+## 27.2 방어 구조
+
+- Task Watchdog 적용
+- 제어 Task heartbeat 또는 실행 카운터 기록
+- 부팅 시 모터 출력 비활성화
+- Watchdog 재부팅 후 SYNCING 진입
+- 재부팅 후 자동 주행 금지
+- 출력핀의 초기 안전 상태 설정
+
+## 27.3 점검 항목
+
+- Task가 Queue 대기에서 정상적으로 block되는가
+- mutex를 무한정 기다리지 않는가
+- 제어 루프에서 긴 JSON 처리나 네트워크 작업을 하지 않는가
+- stack overflow가 발생하지 않는가
+- watchdog reset reason을 HELLO 또는 로그에 포함하는가
+
+---
+
+# 28. 엔코더 펄스가 없거나 비정상적인 문제
+
+## 28.1 가능한 원인
+
+- 엔코더 VCC 미연결
+- 공통 GND 누락
+- 출력전압이 ESP32와 맞지 않음
+- GPIO 번호 오류
+- 인터럽트 설정 오류
+- open collector 출력에 풀업이 없음
+- 모터 노이즈
+- A/B 채널 혼동
+- 데이터시트의 PPR·CPR 정의 오해
+
+## 28.2 점검 순서
+
+```text
+엔코더 정격전압 확인
+→ 출력 방식 확인
+→ 멀티미터 또는 로직 측정
+→ 바퀴 수동 회전
+→ GPIO 입력 변화 확인
+→ ISR 펄스 카운트 확인
+→ 저속 모터 회전
+→ 전진·후진 방향 확인
+```
+
+## 28.3 설계 기준
+
+- ISR에서는 펄스 카운트만 수행한다.
+- 속도·거리 계산은 SensorTask에서 수행한다.
+- 5V 출력은 ESP32 GPIO에 직접 연결하지 않는다.
+- 실제 1회전당 펄스 수를 실측으로 확인한다.
+
+---
+
+# 29. 카메라 좌표와 엔코더 거리가 크게 다른 문제
+
+## 29.1 가능한 원인
+
+- 바퀴 지름 설정 오류
+- PPR·CPR 환산 오류
+- 기어비 반영 누락
+- 바퀴 미끄러짐
+- 회전 중 좌우 이동거리 차이
+- Homography 오차
+- 카메라 Pose 지연
+- 차량 중심 정의 오차
+
+## 29.2 점검 방법
+
+- 직선 구간부터 비교한다.
+- 동일 구간을 여러 번 반복한다.
+- 전진과 후진을 분리한다.
+- 회전 구간은 별도 분석한다.
+- 바닥 재질과 배터리 상태를 기록한다.
+- 한 번의 차이로 환산계수를 즉시 바꾸지 않는다.
+
+## 29.3 초기 보정 방향
+
+```text
+카메라
+→ 절대 위치 기준
+
+엔코더
+→ 속도 및 짧은 구간 상대 이동 보조
+```
+
+처음부터 복잡한 센서 융합을 적용하지 않고, 반복 측정으로 환산계수와 정지거리부터 보정한다.
+
+---
+
+# 30. 동적 장애물 발생 후 재경로가 되지 않는 문제
+
+## 30.1 확인 순서
+
+```text
+장애물 또는 충돌 위험 감지
+→ WAIT가 실제 전송됐는가
+→ 차량이 WAITING인가
+→ 최신 정지 Pose가 확보됐는가
+→ 기존 route가 폐기됐는가
+→ 새 route_id가 생성됐는가
+→ 새 WAYPOINT가 로드됐는가
+→ Safety Shield가 GO를 허용하는가
+→ GO 이후 MOVING으로 전환됐는가
+```
+
+## 30.2 자주 발생하는 오류
+
+- WAITING 확인 전에 새 경로를 생성함
+- 기존 route_id를 그대로 재사용함
+- 새 WAYPOINT를 받자마자 자동 출발함
+- 이전 waypoint buffer를 폐기하지 않음
+- 장애물이 제거되지 않았는데 GO를 보냄
+- 카메라 Pose가 오래된 상태에서 새 경로를 생성함
+
+---
+
+# 31. 최종 PARKED가 잘못 판정되는 문제
+
+ESP32의 최종 ARRIVED만으로 슬롯을 OCCUPIED로 변경하지 않는다.
+
+노트북이 다음을 확인한다.
+
+```text
+차량 중심이 슬롯 내부
+AND
+슬롯 중심과 위치 오차 허용범위 이내
+AND
+heading 오차 허용범위 이내
+AND
+실제 정지 상태
+AND
+일정 프레임 동안 결과 안정
+```
+
+오검출 원인:
+
+- bbox 중심과 실제 차량 중심의 편차
+- 슬롯 polygon 정의 오류
+- heading 반전
+- 한 프레임만 보고 판정
+- 차량이 슬롯 경계에 걸쳐 있음
+- 최종 waypoint와 실제 슬롯 중심 불일치
+
+검증 실패 시 재정렬 waypoint 또는 운영자 확인 절차를 사용한다.
+
+---
+
+# 32. 문제 해결 공통 순서
+
+문제가 발생하면 다음 순서로 접근한다.
+
+## 32.1 하드웨어 문제
+
+```text
+전원 차단
+→ 육안 점검
+→ 단락 확인
+→ 연속성 확인
+→ 전압 확인
+→ 부품 단독 시험
+→ 낮은 출력 통합 시험
+```
+
+## 32.2 통신 문제
+
+```text
+Wi-Fi 연결
+→ TCP 연결
+→ HELLO/HELLO_ACK
+→ session 확인
+→ 원본 JSON 확인
+→ NDJSON 파싱
+→ 필드 검증
+→ Queue 전달
+→ 상태 응답
+```
+
+## 32.3 차량 제어 문제
+
+```text
+현재 state
+→ control mode
+→ target_loaded
+→ 최신 Pose
+→ route_id·waypoint_id
+→ 엔코더 상태
+→ 조향 출력
+→ 모터 출력
+```
+
+## 32.4 인식 문제
+
+```text
+원본 영상
+→ YOLO bbox
+→ tracking association
+→ Homography
+→ 차량 중심
+→ 전방점
+→ heading
+→ confidence와 freshness
+```
+
+---
+
+# 33. 문제 기록 양식
+
+새 문제는 아래 형식으로 추가한다.
 
 ```md
-## Issue Title
+## 문제 제목
 
-### Date
+### 발생 일자
+
 YYYY-MM-DD
 
-### Situation
-Describe what happened.
+### 상태
 
-### Possible Causes
-- Cause 1
-- Cause 2
-- Cause 3
+확인 필요 / 진행 중 / 부분 해결 / 해결 / 보류 / 설계 변경
 
-### Action
-- Action 1
-- Action 2
-- Action 3
+### 발생 상황
 
-### Result
-Describe what changed after the fix.
+문제가 발생한 조건과 증상을 작성한다.
 
-### Next Step
-Describe what should be tested next.
+### 재현 조건
+
+- 하드웨어 구성:
+- 코드 또는 커밋:
+- 입력값:
+- 차량 상태:
+- 네트워크 상태:
+- 반복 재현 여부:
+
+### 가능한 원인
+
+| 가능한 원인 | 근거 | 확인 방법 | 결과 |
+|---|---|---|---|
+|  |  |  |  |
+
+### 적용한 조치
+
+- 
+
+### 조치 결과
+
+- 
+
+### 최종 원인
+
+확정 전에는 `TBD`로 기록한다.
+
+### 재발 방지
+
+- 
+
+### 관련 자료
+
+- 사진:
+- 영상:
+- 로그:
+- 관련 문서:
 ```
 
 ---
 
-## 7. Future Issues To Watch
+# 34. 문제 해결 운영 원칙
 
-| Area | Risk | What To Record |
-|---|---|---|
-| Motor control | Motor does not move at low PWM | Minimum working PWM |
-| Servo control | Steering angle too large or too small | Left/center/right values |
-| Power system | Fuse blown or voltage drop | PWM, battery condition, wiring state |
-| Communication | Command not received | Sent command, received command, baud rate |
-| Camera | Map not fully visible | Camera height, angle, resolution |
-| Integration | RC car does not follow command | Camera result, Pi command, ESP32 action |
+1. 전원 문제를 코드 문제로 단정하지 않는다.
+2. 한 번에 여러 변수를 동시에 변경하지 않는다.
+3. 첫 구동은 낮은 PWM과 바퀴가 들린 상태에서 수행한다.
+4. 퓨즈가 단선되면 정격을 바로 높이지 않고 원인을 먼저 확인한다.
+5. 납땜부 절연과 배선의 기계적 고정을 구분한다.
+6. 통신 연결 성공과 명령 실행 성공을 구분한다.
+7. 잘못된 메시지는 차량 동작으로 이어지지 않아야 한다.
+8. WAIT·STOP·timeout 테스트는 저속에서 먼저 검증한다.
+9. 재접속이나 Pose 복구 후 자동 재출발을 허용하지 않는다.
+10. 실제 결과와 추정 원인을 명확히 구분한다.
+11. 문제 해결 전후의 로그·사진·영상을 남긴다.
+12. 해결된 문제도 삭제하지 않고 개발 이력으로 유지한다.
