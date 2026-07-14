@@ -1,173 +1,619 @@
-# Hardware Wiring
+# RC카 하드웨어 배선 및 전원 설계
 
-## 1. Overview
+## 1. 문서 목적
 
-This document summarizes the hardware wiring structure of the RC car system.
+본 문서는 자율주행 기반 지능형 주차 운영 시스템에서 사용하는 RC카의 전원부, 모터 구동부, 조향 서보, ESP32 및 엔코더 배선 기준을 정리한다.
 
-The wiring is divided into four parts:
+본 문서의 기준 구조는 다음과 같다.
 
-- Main power wiring
-- Motor driver wiring
-- ESP32 control wiring
-- Servo and communication wiring
+- 3S2P 보호회로 내장 배터리팩
+- 메인 퓨즈 및 전원 스위치
+- 전원 분배 터미널
+- Cytron MD10C 1채널 모터드라이버
+- DC 구동모터
+- 조향 서보모터
+- ESP32
+- 모터 엔코더
+- 노트북과 ESP32 간 Wi-Fi TCP 통신
+- Raspberry Pi 미사용
 
-The most important rule is that power wiring must be stable, and all signal-related modules must share common ground.
+핵심 안전 원칙은 다음과 같다.
+
+> 고전류 전원선과 제어 신호선을 구분하고, 모든 차량 내부 전자부는 공통 GND를 사용하며, 모터와 서보의 전원을 ESP32에서 직접 공급하지 않는다.
 
 ---
 
-## 2. Main Power Wiring
+## 2. 전체 전원 구조
+
+권장 전원 흐름은 다음과 같다.
 
 ```text
-Battery
-  ↓
-XT60 Connector
-  ↓
-Fuse
-  ↓
-Power Switch
-  ↓
-Power Distribution Terminal
-  ├── Motor Driver Power Input
-  ├── DC-DC Step-down Converter Input
-  └── Other Modules
+3S2P 배터리팩
+→ XT60 커넥터
+→ 메인 퓨즈
+→ 메인 전원 스위치
+→ 전원 분배 터미널
+   ├─ MD10C 모터드라이버 전원 입력
+   ├─ 서보용 DC-DC 강하 컨버터 입력
+   └─ ESP32용 DC-DC 강하 컨버터 입력
 ```
 
-## 2.1 Power Wiring Notes
+각 분기 출력:
 
-- Use thick wires for the main power line.
-- Place the fuse close to the battery side.
-- Check polarity before connecting the motor driver.
-- Check solder joints before high PWM testing.
-- Secure wires physically to reduce vibration during RC car movement.
+```text
+MD10C
+→ DC 구동모터
+
+서보용 DC-DC 컨버터
+→ 조향 서보 VCC
+
+ESP32용 DC-DC 컨버터
+→ ESP32 5V/VIN 입력
+```
+
+카메라와 노트북은 차량 외부에 위치하므로 차량 전원 분배부에 연결하지 않는다.
 
 ---
 
-## 3. Motor Driver Wiring
+## 3. 배터리 및 충전 구조
 
-| Motor Driver Pin | Connected To | Note |
+### 3.1 배터리
+
+현재 기준 배터리는 다음 조건을 사용한다.
+
+- 정격 전압: 11.1V급
+- 완충 전압: 12.6V
+- 구성: 3S2P
+- 보호회로 및 셀 밸런싱 기능 내장 제품
+- 차량 외부 충전단자 사용
+
+보호회로 내장 배터리팩을 사용하므로 별도의 외부 3S BMS 모듈을 중복 연결하지 않는다.
+
+### 3.2 충전
+
+충전 시에는 12.6V 3S 리튬 배터리 전용 충전기를 사용한다.
+
+충전 절차:
+
+```text
+1. RC카 메인 전원 스위치 OFF
+2. 차량 구동 정지 확인
+3. 전용 충전기를 배터리 충전단자에 연결
+4. 충전 완료 후 충전기 분리
+5. 배선과 배터리 상태 확인 후 차량 전원 ON
+```
+
+충전 중에는 차량을 주행시키지 않는다.
+
+### 3.3 배터리 안전사항
+
+- 배터리 극성을 반대로 연결하지 않는다.
+- 피복 손상, 팽창, 과열, 냄새가 발생한 배터리는 사용하지 않는다.
+- 퓨즈를 우회하거나 임의로 단락하지 않는다.
+- 차량 보관 시 금속 물체가 커넥터에 닿지 않도록 한다.
+- 배터리팩을 차체에 단단히 고정한다.
+
+---
+
+## 4. 메인 퓨즈와 전원 스위치
+
+전원 순서는 다음 기준을 사용한다.
+
+```text
+배터리 양극
+→ 퓨즈
+→ 메인 스위치
+→ 전원 분배 터미널
+```
+
+퓨즈는 가능한 한 배터리 양극 가까이에 배치한다.
+
+퓨즈의 목적:
+
+- 배선 단락 시 과전류 차단
+- 모터드라이버 또는 전원부 고장 시 배터리 보호
+- 납땜부 이탈이나 도체 접촉 사고 보호
+
+퓨즈 정격은 임의로 크게 올리지 않는다. 최종 정격은 모터 정상전류와 정지전류, 배선 허용전류 및 실제 시동전류를 측정한 뒤 결정한다.
+
+메인 스위치는 차량 전체 전원을 물리적으로 차단할 수 있어야 한다.
+
+---
+
+## 5. 전원 분배 및 DC-DC 컨버터
+
+### 5.1 전원 분배
+
+전원 분배 터미널에서는 최소 다음 세 분기를 독립적으로 구성한다.
+
+```text
+1. MD10C 모터 구동 전원
+2. 조향 서보 전원
+3. ESP32 로직 전원
+```
+
+모터 전원, 서보 전원, 로직 전원을 동일한 출력선 하나에 무리하게 묶지 않는다.
+
+### 5.2 ESP32 전원
+
+ESP32에는 배터리 전압을 직접 인가하지 않는다.
+
+```text
+배터리 전압
+→ ESP32용 DC-DC 강하 컨버터
+→ 안정적인 5V
+→ ESP32 5V 또는 VIN
+```
+
+ESP32의 3.3V 핀에 5V를 입력하지 않는다.
+
+### 5.3 서보 전원
+
+서보는 ESP32의 3.3V 또는 보드의 소전류 출력핀에서 직접 구동하지 않는다.
+
+```text
+배터리 전압
+→ 서보용 DC-DC 강하 컨버터
+→ 서보 정격에 맞는 출력전압
+→ 서보 VCC
+```
+
+서보용 컨버터 출력전압은 실제 사용 서보의 정격 범위에 맞게 설정한다. 기존 계획에서는 약 6V 계열을 기준으로 검토하되, 서보 데이터시트와 실측을 우선한다.
+
+### 5.4 DC-DC 출력 확인
+
+컨버터를 ESP32 또는 서보에 연결하기 전에 멀티미터로 출력전압을 확인한다.
+
+확인 항목:
+
+- 무부하 출력전압
+- 서보 동작 시 전압강하
+- 모터 시동 시 ESP32 전원 흔들림
+- 컨버터 과열
+- 납땜부 접촉 상태
+
+---
+
+## 6. 공통 GND 구조
+
+차량 내부의 제어 신호는 동일한 기준 전압을 사용해야 한다.
+
+```text
+배터리 음극
+├─ MD10C 전원 GND
+├─ ESP32용 DC-DC 입력 GND
+├─ 서보용 DC-DC 입력 GND
+├─ ESP32 GND
+├─ 서보 GND
+└─ 엔코더 GND
+```
+
+MD10C 제어 GND와 ESP32 GND도 반드시 연결한다.
+
+노트북과 ESP32는 Wi-Fi로 통신하므로 노트북과 차량 사이에 별도의 UART GND 배선은 필요하지 않다.
+
+USB 케이블은 펌웨어 업로드 및 시리얼 디버깅 시에만 사용할 수 있다.
+
+---
+
+## 7. MD10C 모터드라이버 배선
+
+현재 최종 기준 모터드라이버는 Cytron MD10C 1채널 모터드라이버이다.
+
+### 7.1 전원 및 모터 출력
+
+| MD10C 단자 | 연결 대상 | 설명 |
 |---|---|---|
-| B+ | Battery positive through fuse and switch | Main motor power input |
-| B- | Battery ground | Main motor power ground |
-| M+ | DC motor terminal | Motor output |
-| M- | DC motor terminal | Motor output |
-| PWM | ESP32 GPIO 25 | Motor speed control |
-| DIR | ESP32 GPIO 26 | Motor direction control |
-| GND | ESP32 GND | Common ground required |
+| Motor Power + | 퓨즈와 스위치를 거친 배터리 양극 | 모터 구동 전원 |
+| Motor Power - | 배터리 음극 | 모터 구동 GND |
+| Motor Output A | DC모터 한쪽 단자 | 모터 출력 |
+| Motor Output B | DC모터 반대쪽 단자 | 모터 출력 |
 
-## 3.1 Motor Driver Notes
+실제 보드에 인쇄된 단자명은 제품 버전에 따라 다를 수 있으므로, 보드 실크와 공식 연결 방향을 확인한 뒤 배선한다.
 
-- B+ and B- must be firmly connected.
-- Loose power input can cause unstable behavior or fuse issues.
-- Start testing from low PWM values.
-- Check motor direction at low speed before increasing PWM.
-- If the motor direction is reversed, swap M+ and M- or adjust DIR logic in code.
+### 7.2 ESP32 제어 신호
 
----
-
-## 4. ESP32 Pin Map
-
-| Function | ESP32 GPIO | Description |
+| 기능 | ESP32 GPIO | 연결 대상 |
 |---|---:|---|
-| Motor PWM | GPIO 25 | PWM signal to motor driver |
-| Motor DIR | GPIO 26 | Direction signal to motor driver |
-| Servo PWM | GPIO 27 | Steering servo signal |
-| UART RX | TBD | Receive command from Raspberry Pi |
-| UART TX | TBD | Send response to Raspberry Pi |
-| GND | GND | Common ground |
+| 모터 PWM | GPIO 25 | MD10C PWM 입력 |
+| 모터 방향 | GPIO 26 | MD10C DIR 입력 |
+| 공통 GND | GND | MD10C 제어 GND |
+
+PWM은 속도 제어, DIR은 전진·후진 방향 제어에 사용한다.
+
+### 7.3 방향 확인
+
+초기에는 낮은 PWM으로 방향을 확인한다.
+
+```text
+전진 명령
+→ 차량이 실제 전방으로 이동하는지 확인
+```
+
+방향이 반대인 경우 다음 중 하나로 수정한다.
+
+- 모터 출력 두 선을 서로 교환
+- 코드의 DIR 논리를 반전
+
+하드웨어와 코드 양쪽을 동시에 바꾸지 말고 한 가지 방법으로만 보정한다.
+
+### 7.4 안전정지 검증
+
+프로토콜의 STOP이 실제로 차량을 빠르게 정지시키려면 MD10C의 동작을 실차에서 확인해야 한다.
+
+확인할 항목:
+
+- PWM을 0으로 설정했을 때 관성정지인지 제동정지인지
+- DIR 상태에 따른 정지 동작 차이
+- MD10C가 지원하는 제동 방식
+- 저속과 고속에서의 실제 제동거리
+- WAIT용 제어정지와 STOP용 강한 정지의 구현 가능 여부
+
+코드에서는 정지 동작을 다음 공통 인터페이스로 관리한다.
+
+```text
+safeStop(reason)
+```
+
+모든 Task가 MD10C 출력핀을 직접 변경하지 않고, VehicleControlTask가 최종 출력을 소유한다.
 
 ---
 
-## 5. Servo Wiring
+## 8. DC 구동모터 배선
 
-| Servo Wire | Connected To | Note |
+모터드라이버 출력과 DC모터 기본 배선을 연결한다.
+
+```text
+MD10C Motor Output A
+→ DC모터 선 1
+
+MD10C Motor Output B
+→ DC모터 선 2
+```
+
+모터에 기본 장착된 선이 주 전원선보다 얇더라도, 모터 제조사가 기본 부착한 짧은 배선은 가능한 한 짧게 유지해 MD10C 출력선과 확실하게 연결한다.
+
+주의사항:
+
+- 비틀기만 하고 절연테이프로 덮는 방식은 사용하지 않는다.
+- 납땜 또는 정격에 맞는 커넥터를 사용한다.
+- 납땜부에는 열수축튜브를 우선 사용한다.
+- 모터 진동으로 접합부가 꺾이지 않도록 스트레인 릴리프를 적용한다.
+- 회전축이나 바퀴에 배선이 닿지 않도록 고정한다.
+
+---
+
+## 9. 조향 서보 배선
+
+| 서보 배선 | 연결 대상 | 설명 |
 |---|---|---|
-| VCC | DC-DC converter 5V output | Do not power servo directly from ESP32 3.3V |
-| GND | Common GND | Must be connected to ESP32 GND |
-| Signal | ESP32 GPIO 27 | PWM signal for steering |
+| VCC | 서보용 DC-DC 출력 + | 서보 정격전압 |
+| GND | 서보용 DC-DC 출력 GND 및 공통 GND | 기준 전압 공유 |
+| Signal | ESP32 GPIO 27 | 조향 PWM 신호 |
 
-## 5.1 Servo Notes
-
-- Servo power should come from a stable 5V source.
-- ESP32 only provides the signal line.
-- Servo GND and ESP32 GND must be connected.
-- Test left, center, and right values before driving the RC car.
-- Avoid forcing the servo mechanically beyond the steering limit.
-
----
-
-## 6. Raspberry Pi and ESP32 Communication Wiring
-
-The initial communication method is UART or USB Serial.
+서보 테스트 순서:
 
 ```text
-Raspberry Pi TX  ─────→  ESP32 RX
-Raspberry Pi RX  ←─────  ESP32 TX
-Raspberry Pi GND ──────  ESP32 GND
+1. 조향 링크 분리 또는 바퀴를 공중에 띄움
+2. 중앙값 입력
+3. 좌측 제한값 확인
+4. 우측 제한값 확인
+5. 기구적 간섭 여부 확인
+6. 안전한 최소·중앙·최대 PWM 값 기록
+7. 실제 조향 링크 연결 후 재확인
 ```
 
-If USB Serial is used, the USB cable can handle data communication. Still, common ground should be considered when external motor and servo power systems are connected.
+서보가 기계적 한계를 넘도록 강제로 구동하면 과전류, 기어 손상 및 DC-DC 전압강하가 발생할 수 있다.
 
 ---
 
-## 7. Grounding Rule
+## 10. ESP32 핀맵
 
-All control signals require a shared reference ground.
+현재 확정 핀:
+
+| 기능 | ESP32 GPIO | 상태 |
+|---|---:|---|
+| MD10C PWM | GPIO 25 | 확정 |
+| MD10C DIR | GPIO 26 | 확정 |
+| 조향 서보 PWM | GPIO 27 | 확정 |
+| 엔코더 채널 A | 추후 확정 | 인터럽트 가능 GPIO 사용 |
+| 엔코더 채널 B | 추후 확정 | 방향 판별 필요 시 사용 |
+| 상태 LED 또는 디버그 핀 | 추후 확정 | 선택 |
+| GND | GND | 공통 GND |
+
+엔코더 GPIO를 정할 때 다음을 확인한다.
+
+- 부팅 모드에 영향을 주는 strapping pin 회피
+- 현재 사용 중인 GPIO와 충돌하지 않는가
+- 인터럽트 사용이 가능한가
+- 입력전압이 ESP32 3.3V 허용범위에 맞는가
+- 풀업 저항 필요 여부
+- 엔코더가 단일 채널인지 A/B 2채널인지
+
+핀을 확정하기 전에는 임의의 GPIO 번호를 문서에 고정하지 않는다.
+
+---
+
+## 11. 엔코더 배선
+
+현재 DC모터 엔코더는 속도와 이동거리 측정에 사용한다.
+
+기본 연결:
+
+| 엔코더 선 | 연결 대상 | 비고 |
+|---|---|---|
+| VCC | 엔코더 정격전원 | 데이터시트 확인 |
+| GND | 공통 GND | ESP32와 공통 |
+| Channel A | ESP32 입력 GPIO | 펄스 계수 |
+| Channel B | ESP32 입력 GPIO | 방향 판별 시 사용 |
+
+주의사항:
+
+- 엔코더 출력전압이 5V이면 ESP32 GPIO에 직접 연결하지 않는다.
+- 출력 방식이 open collector인지 push-pull인지 확인한다.
+- 필요 시 풀업 저항 또는 레벨시프터를 사용한다.
+- 모터 전원선과 엔코더 신호선을 가능한 한 떨어뜨린다.
+- 긴 엔코더 신호선은 노이즈 영향을 받을 수 있으므로 짧게 배선한다.
+- 실제 PPR 또는 CPR 정의를 데이터시트와 실측으로 확인한다.
+
+엔코더 ISR에서는 펄스 카운트만 수행하고, 속도·거리 계산은 SensorTask에서 수행한다.
+
+---
+
+## 12. 노트북–ESP32 연결
+
+최종 시스템에서는 노트북과 ESP32를 Wi-Fi TCP로 연결한다.
 
 ```text
-Battery GND
-  ├── Motor Driver B-
-  ├── DC-DC Converter GND
-  ├── Servo GND
-  ├── ESP32 GND
-  └── Raspberry Pi GND
+노트북 TCP Server
+↕ Wi-Fi
+ESP32 TCP Client
 ```
 
-Without common ground, PWM and UART signals may behave unpredictably.
+따라서 다음 배선은 사용하지 않는다.
+
+- Raspberry Pi TX → ESP32 RX
+- Raspberry Pi RX ← ESP32 TX
+- Raspberry Pi–ESP32 UART GND
+- Raspberry Pi 차량 탑재 전원
+
+ESP32 USB 연결은 다음 용도로만 사용한다.
+
+- 펌웨어 업로드
+- 시리얼 모니터 디버깅
+- 책상 위 단독 테스트
+
+실차 무선 운용 시 노트북 USB 케이블을 차량에 연결하지 않는다.
 
 ---
 
-## 8. Recommended Test Order
+## 13. 배선 굵기 기준
 
-| Step | Test | Purpose |
+### 13.1 고전류 메인 배선
+
+기존 프로젝트 기준:
+
+```text
+배터리
+→ XT60
+→ 퓨즈
+→ 메인 스위치
+→ 전원 분배 터미널
+→ MD10C 입력
+→ MD10C 출력
+→ DC모터 연결부
+```
+
+위 구간은 기본적으로 AWG14급 굵은 전선을 우선 사용한다.
+
+단, 모터에 기본 부착된 짧은 배선은 제조 상태를 유지하고 접합부만 확실하게 보강한다.
+
+### 13.2 DC-DC 전원 배선
+
+다음 구간은 실제 부하전류에 맞춰 0.75SQ 또는 AWG18~20급을 기준으로 사용한다.
+
+```text
+전원 분배 터미널
+→ DC-DC 컨버터 입력
+
+DC-DC 컨버터 출력
+→ ESP32 또는 서보
+```
+
+서보의 순간전류가 크므로 너무 가는 점퍼선을 전원선으로 사용하지 않는다.
+
+### 13.3 제어 신호선
+
+다음 신호는 저전류 신호선으로 배선할 수 있다.
+
+- MD10C PWM
+- MD10C DIR
+- 서보 Signal
+- 엔코더 A/B
+
+단, 모터 전원선과 나란히 길게 배치하지 않는다.
+
+---
+
+## 14. 납땜 및 절연 기준
+
+권장 순서:
+
+```text
+1. 피복 제거
+2. 선재와 단자에 예비 납땜
+3. 충분한 면적으로 접합
+4. 납땜 상태 육안 확인
+5. 멀티미터 연속성 확인
+6. 열수축튜브로 절연
+7. 케이블타이 또는 고정구로 장력 제거
+```
+
+절연테이프는 보조 수단으로 사용할 수 있지만, 납땜 접합부의 1차 절연은 열수축튜브를 우선한다.
+
+DC-DC 모듈의 납땜 모서리를 절연테이프로 부분 보호할 수 있으나 다음 부분을 막지 않는다.
+
+- 방열 부품
+- 조정용 가변저항
+- 상태 LED 확인부
+- 커넥터
+- 과열 가능 부위 전체
+
+보드 전체를 테이프로 밀폐하면 방열이 나빠질 수 있다.
+
+---
+
+## 15. 배선 고정 및 기구 배치
+
+차량 주행 중 진동과 조향 때문에 배선이 반복적으로 움직일 수 있다.
+
+고정 기준:
+
+- 배터리팩을 차체에 단단히 고정
+- MD10C를 금속 접촉 없이 절연된 면에 고정
+- DC-DC 컨버터를 흔들리지 않게 고정
+- 납땜부가 직접 당겨지지 않도록 선을 별도 고정
+- 바퀴, 기어, 조향 링크와 배선 간격 확보
+- 모터 전원선과 엔코더 신호선 분리
+- 퓨즈를 교체 가능한 위치에 배치
+- 메인 스위치를 즉시 조작할 수 있는 위치에 배치
+
+부품을 차체 위에 추가 상판으로 배치할 경우 무게중심과 조향 간섭도 확인한다.
+
+---
+
+## 16. 전원 인가 전 점검표
+
+### 전원부
+
+- [ ] 배터리 외관에 이상이 없다.
+- [ ] 배터리 극성이 올바르다.
+- [ ] 퓨즈가 배터리 양극 가까이에 설치되어 있다.
+- [ ] 메인 스위치가 정상적으로 전원을 차단한다.
+- [ ] 전원 분배 터미널의 양극과 음극이 구분되어 있다.
+- [ ] 노출된 도체가 차체 또는 다른 단자와 닿지 않는다.
+
+### DC-DC 컨버터
+
+- [ ] ESP32용 출력전압을 멀티미터로 확인했다.
+- [ ] 서보용 출력전압을 멀티미터로 확인했다.
+- [ ] 입력과 출력 극성이 올바르다.
+- [ ] 납땜부가 흔들리지 않는다.
+- [ ] 방열 부위를 테이프로 밀폐하지 않았다.
+
+### MD10C와 모터
+
+- [ ] MD10C 전원 입력 극성이 올바르다.
+- [ ] 모터 출력선이 확실하게 연결되어 있다.
+- [ ] GPIO 25가 PWM 입력에 연결되어 있다.
+- [ ] GPIO 26이 DIR 입력에 연결되어 있다.
+- [ ] ESP32 GND와 MD10C GND가 연결되어 있다.
+- [ ] 첫 테스트 PWM이 낮게 설정되어 있다.
+- [ ] 바퀴를 공중에 띄운 상태에서 첫 테스트를 진행한다.
+
+### 서보
+
+- [ ] 서보 VCC가 별도 DC-DC 출력에 연결되어 있다.
+- [ ] 서보 GND와 ESP32 GND가 공통이다.
+- [ ] 서보 Signal이 GPIO 27에 연결되어 있다.
+- [ ] 중앙값과 좌우 제한값을 확인했다.
+- [ ] 조향 링크가 기계적 한계에 걸리지 않는다.
+
+### 엔코더
+
+- [ ] 엔코더 정격전압을 확인했다.
+- [ ] 출력전압이 ESP32 입력 허용범위에 맞는다.
+- [ ] A/B 채널이 올바른 GPIO에 연결되어 있다.
+- [ ] 모터선과 신호선이 과도하게 밀착하지 않는다.
+
+---
+
+## 17. 권장 하드웨어 테스트 순서
+
+| 단계 | 테스트 | 목적 |
 |---:|---|---|
-| 1 | Power line continuity check | Confirm no short circuit |
-| 2 | DC-DC converter output check | Confirm stable 5V output |
-| 3 | Motor driver power check | Confirm B+ and B- wiring |
-| 4 | DC motor low PWM test | Check basic movement |
-| 5 | Servo center test | Check steering neutral position |
-| 6 | Servo left/right test | Check steering limits |
-| 7 | Motor + servo integrated test | Check actual driving |
-| 8 | Raspberry Pi command test | Check communication |
+| 1 | 전원이 없는 상태에서 연속성·단락 확인 | 오배선 및 합선 방지 |
+| 2 | 배터리와 퓨즈·스위치만 확인 | 메인 전원부 검증 |
+| 3 | DC-DC 컨버터 출력전압 확인 | ESP32·서보 과전압 방지 |
+| 4 | ESP32 단독 부팅 | 로직 전원 안정성 확인 |
+| 5 | MD10C 제어 신호만 확인 | PWM·DIR 핀 검증 |
+| 6 | 바퀴를 띄우고 저 PWM 모터 테스트 | 모터 방향과 출력 확인 |
+| 7 | 서보 중앙·좌·우 테스트 | 조향 범위 확인 |
+| 8 | 모터와 서보 통합 테스트 | 전압강하 및 간섭 확인 |
+| 9 | safeStop 정지거리 테스트 | WAIT·STOP 동작 검증 |
+| 10 | 엔코더 펄스 확인 | 속도·거리 입력 검증 |
+| 11 | Wi-Fi 명령 테스트 | 무선 제어 검증 |
+| 12 | 실제 바닥 저속 주행 | 하중 상태 최종 확인 |
+
+문제가 발생하면 여러 부품을 동시에 교체하지 말고 직전 단계로 돌아가 원인을 하나씩 분리한다.
 
 ---
 
-## 9. Safety Checklist Before Power On
+## 18. 현재 확인된 문제 이력
 
-- [ ] Battery polarity checked
-- [ ] Fuse installed
-- [ ] Switch connected correctly
-- [ ] B+ and B- connected correctly
-- [ ] DC-DC converter output voltage checked
-- [ ] ESP32 GND and motor driver GND connected
-- [ ] Servo signal and power wiring checked
-- [ ] Wires physically fixed to avoid vibration
-- [ ] First test starts from low PWM
+| 시점 | 문제 | 판단 또는 조치 |
+|---|---|---|
+| 2026-07-02 | 테스트 중 퓨즈 단선 반복 | 모터드라이버 고장 가능성 확인 |
+| 2026-07-02 | 기존 MDD10A 사용 중 문제 발생 | 최종 모터드라이버를 MD10C 1채널로 변경 |
+| 2026-07 | 임시 테스트용 BTS7960 확보 | MD10C 도착 전 또는 비교 테스트용 |
+| 2026-07 | DC-DC 컨버터 납땜부 이탈 | 재납땜 및 물리적 고정 필요 |
+| 2026-07 | 모터 출력 배선 접촉 문제 의심 | 납땜·연속성·출력전압을 단계적으로 재확인 |
+
+기존 문제를 단순히 코드 문제로 가정하지 않는다.
+
+모터가 움직이지 않을 때 확인 순서:
+
+```text
+배터리 전압
+→ 퓨즈 연속성
+→ 스위치 출력
+→ MD10C 전원 입력
+→ ESP32와 MD10C 공통 GND
+→ PWM·DIR 신호
+→ MD10C 모터 출력
+→ 모터 배선 접합부
+→ DC모터 자체
+```
 
 ---
 
-## 10. Known Issues
+## 19. 추후 확정이 필요한 항목
 
-| Date | Issue | Possible Cause | Action |
-|---|---|---|---|
-| 2026-07-02 | Fuse blown during high PWM test | Unstable B+/B- contact or sudden current spike | Reinforce soldering and restart from low PWM |
-| 2026-07-02 | DC-DC converter solder joint disconnected | Weak soldering or vibration | Resolder and physically secure the module |
+다음 항목은 실제 테스트 후 확정한다.
+
+- 엔코더 GPIO 번호
+- 엔코더 정격전압 및 출력 방식
+- 엔코더 PPR/CPR 환산 기준
+- 서보 최종 공급전압
+- 서보 중앙 및 좌우 제한 PWM
+- MD10C PWM 주파수
+- 모터 최소 구동 PWM
+- 전진·후진 DIR 논리
+- WAIT용 정지 방식
+- STOP용 최종 안전정지 방식
+- 실제 제동거리
+- 최종 퓨즈 정격
+- 모터 노이즈 억제를 위한 커패시터 필요 여부
+- 차량 내부 최종 부품 배치
+
+위 항목은 추정으로 고정하지 않고 측정 결과를 `test_log_summary.md`와 `development_log.md`에 기록한다.
 
 ---
 
-## 11. Future Wiring Improvements
+## 20. 최종 배선 원칙
 
-- Add clearer wire labels
-- Add strain relief for power wires
-- Fix DC-DC converter and motor driver firmly to the RC car frame
-- Separate high-current power wires from signal wires as much as possible
-- Add a wiring diagram image in `assets/diagrams/`
+1. 배터리에서 메인 전원은 퓨즈와 스위치를 거쳐 분배한다.
+2. 모터, 서보, ESP32의 전원 분기를 구분한다.
+3. ESP32와 서보에 배터리 전압을 직접 인가하지 않는다.
+4. 차량 내부 전자부는 공통 GND를 사용한다.
+5. 노트북과 ESP32는 Wi-Fi로 통신하며 차량에 Raspberry Pi를 사용하지 않는다.
+6. 모터 PWM은 GPIO 25, DIR은 GPIO 26을 사용한다.
+7. 서보 PWM은 GPIO 27을 사용한다.
+8. 엔코더 핀은 전압과 인터럽트 조건을 확인한 뒤 확정한다.
+9. 고전류 배선은 굵은 전선을 사용하고 신호선과 분리한다.
+10. 납땜부는 열수축튜브와 물리적 고정으로 보호한다.
+11. 모든 첫 구동 테스트는 낮은 PWM과 바퀴가 들린 상태에서 시작한다.
+12. 모터와 서보 출력은 VehicleControlTask에서만 최종 변경한다.
+13. 정지 동작은 `safeStop(reason)`으로 통합한다.
+14. MD10C의 실제 제동 특성은 실차 테스트로 검증한다.
+15. 충전 중에는 메인 스위치를 끄고 차량을 동작시키지 않는다.
