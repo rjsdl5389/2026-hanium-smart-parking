@@ -1,0 +1,9 @@
+# remote-direct-bridge uses the Python standard library ONLY.
+# No third-party packages are required (no pip install needed).
+#
+#   asyncio, json, secrets, itertools, logging, threading, argparse  -> stdlib
+#   msvcrt (Windows keyboard)                                        -> stdlib on Windows
+#
+# Requires Python 3.10+ (uses X | None type unions and match-free asyncio).
+#
+# If a future feature needs an external package, it will be listed here.

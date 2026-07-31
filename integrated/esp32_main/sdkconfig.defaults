@@ -1,0 +1,2 @@
+# Board used by this project has 16 MB SPI flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y

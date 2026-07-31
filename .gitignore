@@ -1,0 +1,21 @@
+# ESP-IDF generated files
+integrated/esp32_main/build/
+integrated/esp32_main/sdkconfig.old
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Local editor/system files
+.vscode/*.log
+.DS_Store
+Thumbs.db
+
+# Local ESP32 configuration containing Wi-Fi/server information
+integrated/esp32_main/main/app_config.h
+integrated/esp32_main/sdkconfig
+integrated/esp32_main/managed_components/
+
+# Temporary and backup files
+*.bak
+*.log
