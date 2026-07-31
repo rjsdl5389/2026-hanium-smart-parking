@@ -9,32 +9,32 @@
 #define FIRMWARE_VERSION "0.5.3-logic-hardening"
 #define PROTOCOL_VERSION 1
 
-/* Inbound command lines from the notebook stay <= 512 bytes (protocol cap). */
 #define MAX_NDJSON_LINE_LENGTH 512
 #define TCP_STREAM_BUFFER_LENGTH 1024
-
-/* Keep both inbound and outbound NDJSON messages inside the architecture's
- * current 512-byte cap. REMOTE_DIRECT STATUS is serialized compactly. */
 #define MAX_TX_LINE_LENGTH 512
 
 #define HELLO_RETRY_MS 500
 #define TCP_RECONNECT_DELAY_MS 1000
 #define HEARTBEAT_TIMEOUT_MS 1000
 #define STATUS_PERIOD_MS 200
-
-/* REMOTE_DIRECT streaming safety: stop if no fresh DIRECT_CONTROL for this long. */
 #define DIRECT_CONTROL_TIMEOUT_MS 500
 
 #define TX_HIGH_QUEUE_LENGTH 12
 #define COMMAND_QUEUE_LENGTH 12
 
 /*
- * 0 = mock actuator (no GPIO output; computed PWM/dir/servo are logged only).
- * 1 = real motor + servo output. Bench-test with wheels off the ground first,
- *     forward and reverse with wheels off the ground before floor testing.
+ * Safe public defaults.
+ * 0 = no real motor/servo GPIO output.
+ * Create local app_config.h and set to 1 only after wheels-off-ground checks.
  */
 #define ENABLE_ACTUATOR_OUTPUT 0
-#define DAY3_ALLOW_GO_WITHOUT_POSE 1
+
+/*
+ * WAYPOINT parsing and target storage exist, but the actual Pose-based
+ * waypoint control loop is not implemented yet. Keep this disabled.
+ */
+#define ENABLE_WAYPOINT_AUTO_CONTROL 0
+#define DAY3_ALLOW_GO_WITHOUT_POSE 0
 
 #define MAX_ROUTE_ID 1000000
 #define MAX_WAYPOINT_ID 1000000
@@ -43,29 +43,20 @@
 #define MAX_POSITION_TOLERANCE_CM 100.0
 #define MAX_HEADING_TOLERANCE_DEG 180.0
 
-/* -------------------------------------------------------------------------
- * Actuator hardware pins (DO NOT change; strapping pins must not be reused).
- * ------------------------------------------------------------------------- */
 #define MOTOR_PWM_GPIO 25
 #define MOTOR_DIR_GPIO 26
 #define SERVO_PWM_GPIO 27
 #define ENCODER_A_GPIO 34
 #define ENCODER_B_GPIO 35
 
-/* Change to -1 after the first real forward-drive test if the raw count sign is opposite. */
 #define ENCODER_DIRECTION_SIGN -1
 
-/* -------------------------------------------------------------------------
- * Motor mapping calibrated on 2026-07-29 (20 kHz, 8-bit PWM, duty 0..255).
- * A normalized throttle magnitude of 1.0 means the current integration-test
- * profile's DEFAULT duty, not unrestricted full hardware output.
- * ------------------------------------------------------------------------- */
 #define MOTOR_PWM_FREQ_HZ 20000
-#define MOTOR_PWM_RES_BITS 8           /* LEDC_TIMER_8_BIT -> duty 0..255 */
+#define MOTOR_PWM_RES_BITS 8
 #define MOTOR_PWM_MAX_DUTY 255
 #define MOTOR_DEADBAND_THROTTLE 0.02
-#define MOTOR_ALLOW_REVERSE 1          /* v5: S-hold reverse enabled; bench-test first */
-#define MOTOR_FORWARD_DIR_LEVEL 1      /* verified: GPIO26 HIGH = forward */
+#define MOTOR_ALLOW_REVERSE 1
+#define MOTOR_FORWARD_DIR_LEVEL 1
 #define MOTOR_REVERSE_DIR_LEVEL 0
 
 #define PWM_FORWARD_MIN 15
@@ -74,20 +65,17 @@
 #define PWM_TURN_DEFAULT 45
 #define PWM_STRONG_TURN_DEFAULT 55
 
-/* Steering changes previously disturbed motor PWM when servo/motor PWM setup
- * overlapped. Keep independent LEDC timers, initialize servo first, and stop
- * the motor for one 50 Hz servo period when the target angle changes. */
+/*
+ * Servo and motor use independent LEDC timers.
+ * The former 20 ms motor stop on every steering update is disabled because
+ * it caused repeated ground-driving slowdown during ramped steering.
+ */
 #define STOP_MOTOR_DURING_STEER_UPDATE 0
 #define STEER_UPDATE_SETTLE_MS 20
 #define SERVO_BOOT_CENTER_DELAY_MS 500
 
-/* -------------------------------------------------------------------------
- * Servo mapping calibrated on 2026-07-29.
- * Piecewise points: -1.0=50°, -0.5=68°, 0=86°, +0.5=104°, +1.0=122°.
- * 22° / 130° are mechanical-limit checks only and are not used in operation.
- * ------------------------------------------------------------------------- */
 #define SERVO_PWM_FREQ_HZ 50
-#define SERVO_PWM_RES_BITS 14          /* LEDC_TIMER_14_BIT -> 16384 counts/20ms */
+#define SERVO_PWM_RES_BITS 14
 #define SERVO_LEFT_STRONG_DEG 50.0
 #define SERVO_LEFT_WEAK_DEG 68.0
 #define SERVO_CENTER_DEG 86.0

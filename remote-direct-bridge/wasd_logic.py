@@ -16,7 +16,7 @@ STEERING_RAMP_STEP = 0.10
 STEERING_RAMP_FAST_STEP = 0.20
 STEERING_RAMP_INTERVAL_MS = 100
 
-# Mirrors ESP32 v5.1 calibration. The firmware remains GPIO authority.
+# Mirrors the verified ESP32 v5.3.1 calibration. Firmware remains GPIO authority.
 PWM_FORWARD_MIN = 15.0
 PWM_FORWARD_DEFAULT = 27.0
 PWM_TURN_MIN = 35.0

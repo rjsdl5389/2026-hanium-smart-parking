@@ -48,7 +48,7 @@ class WasdLogicTests(unittest.TestCase):
         self.assertEqual(advance_steering(0.7, {"a"}), -0.1)
         self.assertEqual(advance_steering(-0.7, {"d"}), 0.1)
 
-    def test_expected_calibration_v51(self):
+    def test_expected_calibration_v53(self):
         self.assertEqual(expected_actuator(1.0, 0.0), (27, 86.0, "FORWARD"))
         self.assertEqual(expected_actuator(1.0, 0.5), (45, 104.0, "FORWARD"))
         self.assertEqual(expected_actuator(-1.0, -1.0), (55, 50.0, "REVERSE"))

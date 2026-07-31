@@ -45,23 +45,26 @@ class HardwareCalibrationTests(unittest.TestCase):
         self.assertLessEqual(len(line), 512)
 
 
-class V5ReverseConfigurationTests(unittest.TestCase):
-    def test_v5_reverse_and_pwm_configuration(self):
+class V53TrackedConfigurationTests(unittest.TestCase):
+    def test_tracked_example_matches_verified_and_safe_defaults(self):
         firmware = (
             Path(__file__).resolve().parents[2]
             / "integrated"
             / "esp32_main"
             / "main"
-            / "app_config.h"
+            / "app_config.example.h"
         )
         text = firmware.read_text(encoding="utf-8")
+        self.assertIn("#define ENABLE_ACTUATOR_OUTPUT 0", text)
+        self.assertIn("#define ENABLE_WAYPOINT_AUTO_CONTROL 0", text)
+        self.assertIn("#define DAY3_ALLOW_GO_WITHOUT_POSE 0", text)
         self.assertIn("#define MOTOR_ALLOW_REVERSE 1", text)
         self.assertIn("#define MOTOR_PWM_FREQ_HZ 20000", text)
         self.assertIn("#define MOTOR_PWM_RES_BITS 8", text)
         self.assertIn("#define MOTOR_FORWARD_DIR_LEVEL 1", text)
         self.assertIn("#define MOTOR_REVERSE_DIR_LEVEL 0", text)
         self.assertIn("#define ENCODER_DIRECTION_SIGN -1", text)
-        self.assertIn("#define FIRMWARE_VERSION \"0.5.3-logic-hardening\"", text)
+        self.assertIn('#define FIRMWARE_VERSION "0.5.3-logic-hardening"', text)
         self.assertIn("#define PWM_FORWARD_DEFAULT 27", text)
         self.assertIn("#define PWM_TURN_DEFAULT 45", text)
         self.assertIn("#define PWM_STRONG_TURN_DEFAULT 55", text)
@@ -71,6 +74,11 @@ class V5ReverseConfigurationTests(unittest.TestCase):
         self.assertIn("#define SERVO_CENTER_DEG 86.0", text)
         self.assertIn("#define SERVO_RIGHT_WEAK_DEG 104.0", text)
         self.assertIn("#define SERVO_RIGHT_STRONG_DEG 122.0", text)
+
+        vehicle_control = firmware.parent / "vehicle_control.c"
+        vehicle_text = vehicle_control.read_text(encoding="utf-8")
+        self.assertIn("#if !ENABLE_WAYPOINT_AUTO_CONTROL", vehicle_text)
+        self.assertIn("COMMAND_RESULT_HOLD", vehicle_text)
 
 
 if __name__ == "__main__":

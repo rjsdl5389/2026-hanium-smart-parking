@@ -455,6 +455,17 @@ static void handle_go_locked(const protocol_message_t *message)
         finish_reliable_locked(message, COMMAND_RESULT_TARGET_MISMATCH);
         return;
     }
+#if !ENABLE_WAYPOINT_AUTO_CONTROL
+    /*
+     * WAYPOINT parsing/target storage is implemented, but the Pose-based
+     * steering/speed loop is not. Do not report MOVING for a controller that
+     * cannot physically follow the target.
+     */
+    ESP_LOGW(TAG, "WAYPOINT_AUTO control loop disabled; GO held in WAITING");
+    finish_reliable_locked(message, COMMAND_RESULT_HOLD);
+    return;
+#endif
+
     if (!go_pose_gate_passes_locked()) {
         finish_reliable_locked(message, COMMAND_RESULT_POSE_REQUIRED);
         return;
