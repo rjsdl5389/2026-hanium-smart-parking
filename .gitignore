@@ -45,3 +45,9 @@ Thumbs.db
 *.zip
 *.7z
 *.rar
+# Development patch/backup artifacts
+*.bak
+*.bak_*
+*.pre_*
+*backup_*
+*_backup_*
