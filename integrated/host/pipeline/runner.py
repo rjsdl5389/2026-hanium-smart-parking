@@ -1,0 +1,803 @@
+"""CV → RL → 통신 통합 파이프라인.
+
+지금까지 개별 검증한 모듈을 하나의 상시 루프로 조립한다.
+
+    카메라 프레임
+      → YOLO 탐지·추적 (track_id)
+      → homography (픽셀 → mm) + bbox offset 보정
+      → heading 추정 (궤적 기반)
+      → track_id ↔ car_id 매핑 (순차 진입)
+      → 신규 차량이면 RL 슬롯 배정 → waypoint 생성 → 미션 시작
+      → 도착 판정 (노트북 담당) → WAIT → 다음 WAYPOINT → GO
+      → 충돌 감지 → hold / 경로 재생성
+      → POSE_UPDATE 스트림 (펌웨어 지원 시)
+
+실행::
+
+    from pipeline import ParkingPipeline, PipelineConfig
+    p = ParkingPipeline(PipelineConfig(camera_source=0,
+                                       weights_path="best05.pt"))
+    p.start()          # TCP 서버 기동 (ESP32 접속 대기)
+    p.run_camera()     # 카메라 루프 (블로킹)
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any
+
+from comm import MissionOrchestrator, MissionState, VehicleServer
+from control import ControlOutput, Pose, WaypointController
+from control.auto_host_runner import AutoHostRunner
+from control.hybrid_control import HybridControlMux
+from integration.remote_direct_session import ModeHandshakeError
+from cv.association import associate
+from cv.heading import HeadingEstimator
+from cv.homography import compute_homography, warp_point
+from cv.tracker import RCCarTracker, TrackState
+from cv.vehicle_detector import YoloVehicleDetector
+from parking.safety import CollisionMonitor, VehiclePose
+from parking.waypoints import build_waypoints, default_slot_specs
+from rl.bridge import RealtimeAllocator, position_to_node
+
+from .config import PipelineConfig
+from .dashboard import DashboardBridge
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class VehicleView:
+    """카메라가 보는 차량 1대의 최신 관측값."""
+
+    track_id: int
+    car_id: int | None = None
+    position_mm: tuple[float, float] = (0.0, 0.0)
+    heading_deg: float | None = None
+    heading_source: str | None = None
+    confidence: float = 0.0
+    node: str | None = None
+    slot_id: str | None = None
+    last_seen_frame: int = 0
+    last_alloc_frame: int = -10_000        # 슬롯 배정 재시도 조절용
+    recent: deque[tuple[float, float]] = field(default_factory=lambda: deque(maxlen=8))
+
+    def is_stationary(self, tolerance_mm: float, window: int) -> bool:
+        """최근 창 안에서 거의 움직이지 않았는지 (PARKED 재검증용, §11)."""
+        pts = list(self.recent)[-window:]
+        if len(pts) < window:
+            return False
+        x0, y0 = pts[0]
+        return all(math.hypot(x - x0, y - y0) <= tolerance_mm for x, y in pts[1:])
+
+
+class ParkingPipeline:
+    """카메라 한 대 + 차량 N대를 묶는 최상위 실행기."""
+
+    def __init__(self, config: PipelineConfig | None = None,
+                 detector: YoloVehicleDetector | None = None) -> None:
+        self.config = config or PipelineConfig()
+        self._detector = detector
+        self._homography = None
+
+        self.server = VehicleServer(
+            host=self.config.server_host,
+            port=self.config.server_port,
+            known_car_ids=set(self.config.known_car_ids),
+        )
+        self.orchestrator = MissionOrchestrator(
+            self.server,
+            camera_lead_cm=self.config.camera_lead_cm,
+            on_parked=self._on_parked,
+        )
+        self.allocator = RealtimeAllocator(model_path=self.config.policy_path)
+        self.heading = HeadingEstimator(min_move=self.config.heading_min_move_mm)
+        self.collision = CollisionMonitor()
+
+        self.dashboard = DashboardBridge(pose_interval_s=self.config.dashboard_pose_interval_s)
+        self._collision_held: set[int] = set()           # 충돌로 정지시킨 차량
+        self._comm_lost: set[int] = set()                # 통신 장애로 정지시킨 차량
+        # B안: 차량별 주행 제어기 (throttle/steering 계산)
+        self.controllers: dict[int, WaypointController] = {}
+        self.last_control: dict[int, ControlOutput] = {}
+        self._mode_set: set[int] = set()                 # SET_MODE 완료 차량
+        self._last_control_mode: dict[int, str] = {}     # 로그 중복 억제
+        self.auto_host_runners: dict[int, AutoHostRunner] = {}
+        self.hybrid_controls: dict[int, HybridControlMux] = {}
+        self._manual_shell_starting: set[int] = set()
+        self._hybrid_stopping: bool = False
+        self.views: dict[int, VehicleView] = {}          # track_id → 관측
+        self.track_of_car: dict[int, int] = {}           # car_id → track_id
+        self._pending_cars: list[int] = []               # HELLO 순서 대기열
+        self._lock = threading.Lock()
+        self._tracker: RCCarTracker | None = None
+
+        self.server.on_status = self.orchestrator.on_vehicle_status
+        self.server.on_command_rejected = self.orchestrator.on_command_rejected
+        self.server.on_ready = self._on_vehicle_ready
+        self.server.on_resync = self._on_resync
+        self.server.hold_check = self._hold_check
+        self.server.on_comm_fail = self._on_comm_fail
+        self.server.on_comm_recovered = self._on_comm_recovered
+        self.orchestrator.on_replan_required = self._on_replan_required
+        self.server.direct_control_enabled = self.config.direct_control
+
+    # ─── 라이프사이클 ────────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        """TCP 서버를 띄우고 ESP32 접속을 받는다 (논블로킹)."""
+        self.server.start()
+        log.info("vehicle server listening on %s:%d",
+                 self.config.server_host, self.server.bound_port)
+
+
+    # --------------------------------------------------------- hybrid dev control
+    def hybrid_available(self, car_id: int) -> bool:
+        return car_id in self.hybrid_controls
+
+    def hybrid_mode(self, car_id: int) -> str:
+        mux = self.hybrid_controls.get(car_id)
+        return mux.mode if mux is not None else "UNAVAILABLE"
+
+    def switch_to_manual(self, car_id: int) -> None:
+        mux = self.hybrid_controls.get(car_id)
+        if mux is None:
+            raise RuntimeError(
+                f"car {car_id}: hybrid control unavailable; "
+                "AUTO_HOST mission/session has not started yet"
+            )
+        mux.switch_to_manual()
+
+    def switch_to_auto(self, car_id: int) -> None:
+        mux = self.hybrid_controls.get(car_id)
+        if mux is None:
+            raise RuntimeError(
+                f"car {car_id}: hybrid control unavailable; "
+                "AUTO_HOST mission/session has not started yet"
+            )
+        mux.switch_to_auto()
+
+    def set_manual_drive(
+        self,
+        car_id: int,
+        throttle: float,
+        steering: float,
+    ) -> None:
+        mux = self.hybrid_controls.get(car_id)
+        if mux is None:
+            return
+        mux.set_manual_wire(throttle, steering)
+
+    def manual_stop(self, car_id: int) -> None:
+        mux = self.hybrid_controls.get(car_id)
+        if mux is None:
+            raise RuntimeError(
+                f"car {car_id}: hybrid control unavailable"
+            )
+
+        # HOLD must not be overridden by AUTO 100 ms later.
+        if mux.mode != "MANUAL_WASD":
+            mux.switch_to_manual()
+
+        mux.set_manual_wire(0.0, 0.0)
+        try:
+            self.server.stop_control(car_id)
+        except Exception:
+            pass
+
+    def stop(self) -> None:
+        self._hybrid_stopping = True
+        for mux in list(self.hybrid_controls.values()):
+            try:
+                mux.stop()
+            except Exception:
+                pass
+        self.hybrid_controls.clear()
+        for runner in list(self.auto_host_runners.values()):
+            try:
+                runner.stop()
+            except Exception:
+                pass
+        self.auto_host_runners.clear()
+        if self._tracker is not None:
+            self._tracker.stop()
+        self.server.stop()
+
+    def run_camera(self, max_frames: int | None = None, show: bool = False) -> None:
+        """카메라 루프를 돈다 (블로킹). 프레임마다 on_frame 처리."""
+        if self._detector is None:
+            self._detector = YoloVehicleDetector(
+                weights_path=self.config.weights_path,
+                confidence_threshold=self.config.confidence_threshold,
+                imgsz=self.config.imgsz,
+                custom_model=self.config.custom_model,
+            )
+        self._tracker = RCCarTracker(
+            source=self.config.camera_source,
+            detector=self._detector,
+            max_fps=self.config.max_fps,
+        )
+        if show:
+            self._tracker.overlay = self._draw_targets
+        self._tracker.run(on_frame=self.on_frame, max_frames=max_frames, show=show)
+
+    def _draw_targets(self, image, state: TrackState):
+        """현재 목표 waypoint 를 화면에 표시한다 (show=True 일 때만).
+
+        차를 어디로 옮겨야 하는지 눈으로 보이지 않으면 실차 검증이 어렵다.
+        맵 좌표를 역투영해 목표점·허용 반경·남은 거리를 그린다.
+        """
+        import cv2
+        import numpy as np
+
+        if self._homography is None:
+            return image
+        inv = np.linalg.inv(np.asarray(self._homography, dtype=float))
+
+        def to_px(mm: tuple[float, float]) -> tuple[int, int] | None:
+            v = inv @ np.array([mm[0], mm[1], 1.0])
+            if abs(v[2]) < 1e-9:
+                return None
+            return int(v[0] / v[2]), int(v[1] / v[2])
+
+        y = 60
+        for car_id, m in self.orchestrator.missions.items():
+            wp = m.current
+            if wp is None:
+                continue
+            pt = to_px((wp.x, wp.y))
+            if pt is not None:
+                # 허용 반경도 픽셀로 환산 (x 방향 기준 근사)
+                edge = to_px((wp.x + wp.position_tolerance_cm * 10.0, wp.y))
+                radius = abs(edge[0] - pt[0]) if edge else 20
+                cv2.circle(image, pt, max(radius, 8), (0, 200, 255), 2)
+                cv2.drawMarker(image, pt, (0, 200, 255), cv2.MARKER_CROSS, 18, 2)
+                cv2.putText(image, f"car{car_id} wp{wp.waypoint_id} {wp.phase}",
+                            (pt[0] + 12, pt[1] - 12), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6, (0, 200, 255), 2)
+
+            track_id = self.track_of_car.get(car_id)
+            view = self.views.get(track_id) if track_id is not None else None
+            dist = ""
+            if view is not None:
+                dist = f"  남은거리 {math.hypot(wp.x - view.position_mm[0], wp.y - view.position_mm[1]):.0f}mm"
+            cv2.putText(image, f"car{car_id} {m.state.name} {m.slot_id or '-'} "
+                               f"wp{wp.waypoint_id}/{len(m.waypoints)}{dist}",
+                        (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+            y += 26
+
+            out = self.last_control.get(car_id)
+            if out is not None:
+                # 실차 튜닝 중에는 이 줄만 보면 된다: 어디로 얼마나 틀고 미는지.
+                color = (0, 255, 120) if out.throttle > 0 else (120, 120, 255)
+                cv2.putText(
+                    image,
+                    f"   {out.mode} thr {out.throttle:+.2f} str {out.steering:+.2f} "
+                    f"err {out.heading_error_deg:+.0f}deg"
+                    + (f" [{out.reason}]" if out.reason else ""),
+                    (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+                y += 24
+                if view is not None and view.heading_deg is not None:
+                    # 조향 방향을 화살표로 — 부호 규약(좌=+)을 눈으로 검증한다
+                    origin = to_px(view.position_mm)
+                    if origin is not None:
+                        ang = math.radians(view.heading_deg
+                                           + out.steering * self.config.vehicle_limits.max_steer_deg)
+                        tip = (int(origin[0] + 70 * math.cos(ang)),
+                               int(origin[1] - 70 * math.sin(ang)))
+                        cv2.arrowedLine(image, origin, tip, color, 2, tipLength=0.3)
+        return image
+
+    # ─── 프레임 처리 (핵심) ──────────────────────────────────────────────────
+
+    def on_frame(self, state: TrackState) -> None:
+        """탐지 결과 1프레임을 좌표·판정·명령까지 흘린다."""
+        if self._homography is None:
+            self._init_homography(state)
+
+        # 2클래스 모델이면 전방 쿠션을 차량과 짝지어 heading 정확도를 높인다.
+        # 1클래스 모델에서는 쿠션이 없으므로 pairs 가 비고 기존 동작과 같아진다.
+        prev_headings = {v.track_id: v.heading_deg for v in self.views.values()
+                         if v.heading_deg is not None}
+        pairs, unpaired = associate(state.detections, prev_headings,
+                                    image_heading_of=self._heading_from_pixels)
+
+        seen: list[VehicleView] = []
+        for pair in pairs:
+            if pair.car.track_id is None:
+                continue
+            view = self._update_view(pair.car, state.frame_index,
+                                     front_px=pair.cushion_center_px)
+            seen.append(view)
+        for det in unpaired:
+            if det.track_id is None:
+                continue
+            seen.append(self._update_view(det, state.frame_index))
+
+        for view in seen:
+            self._ensure_mission(view, state.frame_index)
+            self._push_to_vehicle(view)
+
+        self._check_collisions(seen)
+        self._forget_stale(state.frame_index)
+
+    def _init_homography(self, state: TrackState) -> None:
+        """첫 프레임 크기로 캘리브레이션 행렬을 만든다."""
+        w, h = state.frame_size
+        if not w or not h:
+            raise RuntimeError("frame_size 가 비어 있어 homography 를 만들 수 없다")
+        src, dst = self.config.homography_pairs(w, h)
+        self._homography = compute_homography(src, dst)
+        log.info("homography ready (frame %dx%d)", w, h)
+
+    def _heading_from_pixels(self, car_px: tuple[float, float],
+                             front_px: tuple[float, float]) -> float | None:
+        """픽셀 두 점을 맵 좌표로 옮겨 heading 을 구한다 (§6.5).
+
+        heading 은 반드시 실좌표에서 계산해야 한다. 픽셀에서 각도를 재면
+        카메라 투영 왜곡이 그대로 각도 오차가 된다.
+        """
+        if self._homography is None:
+            return None
+        cx, cy = warp_point(car_px, self._homography)
+        fx, fy = warp_point(front_px, self._homography)
+        if math.hypot(fx - cx, fy - cy) < 1e-6:
+            return None
+        return math.degrees(math.atan2(fy - cy, fx - cx)) % 360.0
+
+    def _update_view(self, det, frame_index: int,
+                     front_px: tuple[float, float] | None = None) -> VehicleView:
+        x1, y1, x2, y2 = det.bbox
+        center_px = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+        mx, my = warp_point(center_px, self._homography)
+        mx += self.config.bbox_offset_mm[0]
+        my += self.config.bbox_offset_mm[1]
+
+        with self._lock:
+            view = self.views.get(det.track_id)
+            if view is None:
+                view = VehicleView(track_id=det.track_id)
+                self.views[det.track_id] = view
+            view.position_mm = (mx, my)
+            view.confidence = det.confidence
+            view.last_seen_frame = frame_index
+            view.recent.append((mx, my))
+
+        front_mm = warp_point(front_px, self._homography) if front_px else None
+        hr = self.heading.update(det.track_id, (mx, my), front_point=front_mm)
+        view.heading_deg, view.heading_source = hr.heading_deg, hr.source
+        view.node = position_to_node((mx, my))
+        # RL 관측이 실제 차량 진행을 반영해야 한다. 이 갱신이 없으면 정책은
+        # 모든 차량이 입구에 멈춰 있다고 보고 후속 차량에 영원히 WAIT 을 준다.
+        self.allocator.update(det.track_id, (mx, my))
+        return view
+
+    # ─── track_id ↔ car_id 매핑 (순차 진입) ──────────────────────────────────
+
+    def _on_vehicle_ready(self, car_id: int) -> None:
+        """HELLO 승인 순서를 대기열에 넣는다 — 카메라 진입 순서와 대조."""
+        with self._lock:
+            if car_id not in self._pending_cars and car_id not in self.track_of_car:
+                self._pending_cars.append(car_id)
+        log.info("car %d ready (awaiting camera match)", car_id)
+        if self.config.control_mode == "auto-host":
+            with self._lock:
+                should_start = (
+                    car_id not in self.auto_host_runners
+                    and car_id not in self._manual_shell_starting
+                    and not self._hybrid_stopping
+                )
+                if should_start:
+                    self._manual_shell_starting.add(car_id)
+            if should_start:
+                threading.Thread(
+                    target=self._start_manual_shell,
+                    args=(car_id,),
+                    name=f"ready-manual-{car_id}",
+                    daemon=True,
+                ).start()
+
+        if self.config.control_mode != "auto-host" and self.config.direct_control \
+                and self.config.direct_control_set_mode \
+                and car_id not in self._mode_set:
+            # B안에서는 ESP32 가 waypoint 를 추종하지 않고 제어값만 실행한다.
+            try:
+                self.server.send_set_mode(car_id, "REMOTE_DIRECT")
+                self._mode_set.add(car_id)
+                log.info("car %d: SET_MODE REMOTE_DIRECT (B안 제어)", car_id)
+            except RuntimeError as exc:
+                log.warning("car %d: SET_MODE 실패 (%s)", car_id, exc)
+
+    def _bind_car(self, view: VehicleView) -> int | None:
+        """진입 노드에 나타난 미매핑 track 을 대기열 앞쪽 car_id 와 연결한다."""
+        with self._lock:
+            if view.car_id is not None:
+                return view.car_id
+            if not self._pending_cars:
+                return None
+            car_id = self._pending_cars.pop(0)
+            view.car_id = car_id
+            self.track_of_car[car_id] = view.track_id
+        log.info("bound track %d ↔ car %d", view.track_id, car_id)
+        return car_id
+
+    # ─── 미션 시작 / 진행 ────────────────────────────────────────────────────
+
+    def _start_manual_shell(self, car_id: int) -> None:
+        """Background READY handshake -> immediate MANUAL_WASD capability."""
+        runner = AutoHostRunner(self.server, car_id, [])
+        mux = None
+        try:
+            runner.session.arm_auto(wait_s=2.0)
+            mux = HybridControlMux(runner)
+            mux.switch_to_manual()
+
+            with self._lock:
+                if self._hybrid_stopping:
+                    raise RuntimeError("pipeline stopping")
+                if car_id in self.auto_host_runners:
+                    raise RuntimeError("control shell already exists")
+                self.auto_host_runners[car_id] = runner
+                self.hybrid_controls[car_id] = mux
+
+            log.info("car %d: READY manual shell armed", car_id)
+
+        except Exception as exc:
+            if mux is not None:
+                try:
+                    mux.stop()
+                except Exception:
+                    pass
+            try:
+                runner.stop()
+            except Exception:
+                pass
+            log.warning("car %d: READY manual shell failed (%s)", car_id, exc)
+
+        finally:
+            with self._lock:
+                self._manual_shell_starting.discard(car_id)
+
+    def _activate_auto_host_mission(self, car_id: int, wps) -> bool:
+        """Load a route into the READY shell, or create a runner as fallback."""
+        runner = self.auto_host_runners.get(car_id)
+        mux = self.hybrid_controls.get(car_id)
+
+        if runner is None:
+            runner = AutoHostRunner(self.server, car_id, wps)
+            try:
+                runner.start(wait_s=2.0)
+            except (ModeHandshakeError, RuntimeError) as exc:
+                try:
+                    runner.stop()
+                except Exception:
+                    pass
+                log.warning("car %d: AUTO_HOST start failed (%s)", car_id, exc)
+                return False
+
+            self.auto_host_runners[car_id] = runner
+            self.hybrid_controls[car_id] = HybridControlMux(runner)
+            return True
+
+        runner.load_waypoints(wps)
+
+        if mux is None:
+            mux = HybridControlMux(runner)
+            self.hybrid_controls[car_id] = mux
+
+        mux.switch_to_auto()
+        return True
+
+    def _ensure_mission(self, view: VehicleView, frame_index: int) -> None:
+        """진입 노드의 신규 차량에 슬롯을 배정하고 주행을 시작한다.
+
+        RL 정책은 혼잡할 때 의도적으로 WAIT(슬롯 미배정)을 반환한다. 이 경우
+        차량을 방치하면 안 되므로, 진입 노드에 머무는 동안 주기적으로 재시도한다.
+        """
+        if view.slot_id is not None:
+            return                       # 이미 배정 완료
+        if view.node not in self.config.entry_nodes:
+            return
+        car_id = view.car_id if view.car_id is not None else self._bind_car(view)
+        if car_id is None:
+            return                       # 아직 접속한 차량이 없음
+        if self.config.control_mode == "auto-host":
+            if car_id in self._manual_shell_starting:
+                return                   # READY handshake in progress; retry next frame
+            existing_runner = self.auto_host_runners.get(car_id)
+            if existing_runner is not None and existing_runner.host.mission.is_active:
+                return                   # AUTO_HOST mission already active
+        elif car_id in self.orchestrator.missions:
+            return                       # legacy mission already active
+        if frame_index - view.last_alloc_frame < self.config.alloc_retry_frames:
+            return                       # 재시도 주기 대기
+        view.last_alloc_frame = frame_index
+
+        self.allocator.update(view.track_id, view.position_mm)
+        slot_id = self.allocator.allocate(view.track_id)
+        if slot_id is None:
+            log.info("car %d: no slot available (RL WAIT) — will retry", car_id)
+            return
+        route_id = self.orchestrator.next_route_id()
+        wps = build_waypoints(default_slot_specs()[slot_id], route_id=route_id)
+        if self.config.control_mode == "auto-host":
+            if not self._activate_auto_host_mission(car_id, wps):
+                return
+            log.info("car %d: AUTO_HOST mission loaded", car_id)
+        else:
+            try:
+                self.orchestrator.start_mission(car_id, wps, slot_id=slot_id)
+            except RuntimeError as exc:
+                log.info("car %d: mission start deferred (%s)", car_id, exc)
+                return
+        view.slot_id = slot_id
+        log.info("car %d → slot %s (route %d, %d waypoints)",
+                 car_id, slot_id, route_id, len(wps))
+        self.dashboard.push_event("slot_assigned", car_id=car_id, slot=slot_id,
+                                  route_id=route_id)
+
+    def _push_to_vehicle(self, view: VehicleView) -> None:
+        """도착 판정 + POSE 스트림 갱신."""
+        if view.car_id is None:
+            return
+        if self.config.control_mode == "auto-host":
+            runner = self.auto_host_runners.get(view.car_id)
+            if runner is None:
+                return
+            mux = self.hybrid_controls.get(view.car_id)
+            if mux is not None:
+                mux.on_camera_pose(
+                    view.position_mm[0], view.position_mm[1],
+                    view.heading_deg, time.monotonic())
+            else:
+                runner.on_camera_pose(
+                    view.position_mm[0], view.position_mm[1],
+                    view.heading_deg, time.monotonic())
+            self.dashboard.push_pose(
+                car_id=view.car_id,
+                position_mm=view.position_mm,
+                status="moving",
+                heading_deg=view.heading_deg,
+                heading_source=view.heading_source,
+                parking_phase=None,
+                route_id=None,
+                waypoint_id=None,
+            )
+            return
+        mission = self.orchestrator.missions.get(view.car_id)
+        # PARKED 재검증은 실제 정지를 함께 확인한다 (§11)
+        if mission is not None and mission.state is MissionState.PARKED_CHECK:
+            if not view.is_stationary(self.config.stationary_tolerance_mm,
+                                      self.config.stationary_window):
+                return
+        mission = self.orchestrator.missions.get(view.car_id)
+        self.dashboard.push_pose(
+            car_id=view.car_id, position_mm=view.position_mm,
+            status="parked" if mission and mission.state is MissionState.DONE else "moving",
+            heading_deg=view.heading_deg, heading_source=view.heading_source,
+            parking_phase=mission.current.phase if mission and mission.current else None,
+            route_id=mission.route_id if mission else None,
+            waypoint_id=mission.current.waypoint_id if mission and mission.current else None,
+        )
+        self.orchestrator.update_pose(view.car_id, view.position_mm, view.heading_deg)
+        self.server.push_pose(
+            view.car_id,
+            x_cm=view.position_mm[0] / 10.0,
+            y_cm=view.position_mm[1] / 10.0,
+            heading_deg=view.heading_deg,
+            heading_source=view.heading_source,
+            position_confidence=view.confidence,
+            heading_confidence=0.9 if view.heading_source == "TRAJECTORY" else 0.5,
+            valid=view.heading_deg is not None,
+        )
+        if self.config.direct_control:
+            self._update_control(view)
+
+    # ─── B안 주행 제어 ───────────────────────────────────────────────────────
+
+    def _update_control(self, view: VehicleView) -> None:
+        """현재 pose 와 목표 waypoint 로 throttle/steering 을 만들어 스트림에 싣는다.
+
+        구동을 허용하는 건 미션이 DRIVING 인 동안뿐이다. 전환(SWITCHING/
+        LOADING/RESUMING)·정지(HELD)·주차 확인(PARKED_CHECK) 구간에서는
+        0 을 계속 내보낸다 — 마지막 값이 유지되는 스트림이라 명시적으로
+        0 을 실어야 차가 타력 주행하지 않는다.
+        """
+        car_id = view.car_id
+        if car_id is None:
+            return
+        mission = self.orchestrator.missions.get(car_id)
+        target = mission.current if mission is not None else None
+        if target is None:
+            self.server.stop_control(car_id)
+            self.last_control.pop(car_id, None)
+            return
+
+        ctrl = self.controllers.get(car_id)
+        if ctrl is None:
+            ctrl = self.controllers[car_id] = WaypointController(self.config.vehicle_limits)
+
+        allow = (mission.state is MissionState.DRIVING
+                 and car_id not in self._comm_lost
+                 and car_id not in self._collision_held)
+        out = ctrl.compute(
+            # 이 프레임에 실제로 탐지된 차량이므로 위치는 유효하다.
+            # heading 유무는 제어기가 따로 판정한다 (NO_HEADING).
+            Pose(view.position_mm[0], view.position_mm[1], view.heading_deg,
+                 timestamp=time.monotonic(), valid=True),
+            target, allow_drive=allow)
+        self.last_control[car_id] = out
+        self.server.push_control(car_id, out.throttle, out.steering)
+
+        prev = self._last_control_mode.get(car_id)
+        if prev != out.mode:
+            self._last_control_mode[car_id] = out.mode
+            log.info("car %d control %s → %s (dist %.1fcm, err %.0f°, "
+                     "thr %.2f, str %.2f)%s",
+                     car_id, prev or "-", out.mode, out.distance_cm,
+                     out.heading_error_deg, out.throttle, out.steering,
+                     f" [{out.reason}]" if out.reason else "")
+
+    # ─── 안전 ────────────────────────────────────────────────────────────────
+
+    def _check_collisions(self, seen: list[VehicleView]) -> None:
+        poses = []
+        for v in seen:
+            if v.car_id is None:
+                continue
+            m = self.orchestrator.missions.get(v.car_id)
+            if m is None or m.current is None:
+                continue
+            progress = m.index / max(len(m.waypoints), 1)
+            # HELD/DONE 처럼 정지가 확정된 상태가 아니면 언제든 움직일 수 있다고 본다.
+            # (LOADING·RESUMING 은 곧 출발하는 상태이므로 정지로 취급하면 위험)
+            moving = m.state not in (MissionState.HELD, MissionState.DONE)
+            poses.append(VehiclePose(
+                car_id=v.car_id, position=v.position_mm, next_waypoint=m.current,
+                progress=progress, is_moving=moving,
+            ))
+        if len(poses) < 2:
+            self._resume_cleared(set())
+            return
+
+        at_risk: set[int] = set()
+        for event in self.collision.check(poses):
+            at_risk.add(event.stop_car_id)
+            stop_m = self.orchestrator.missions.get(event.stop_car_id)
+            keep_m = self.orchestrator.missions.get(event.keep_car_id)
+            if stop_m is None or stop_m.state is MissionState.HELD:
+                continue                      # 이미 조치된 차량
+            if event.stop_car_id in self._comm_lost:
+                continue                      # 링크 단절 — 명령이 닿지 않는다
+            if keep_m is not None and keep_m.state is MissionState.HELD:
+                # 상대가 이미 멈춰 있다. 여기서 이쪽까지 세우면 두 대 모두
+                # 정지해 교착이 된다 — 통과 우선순위를 받은 차를 보낸다.
+                continue
+            log.warning("collision risk: car %d holds (%s, %.0fmm)",
+                        event.stop_car_id, event.reason, event.distance_mm)
+            self.orchestrator.hold(event.stop_car_id, "COLLISION_RISK")
+            self._collision_held.add(event.stop_car_id)
+            self.dashboard.push_event("vehicle_hold", car_id=event.stop_car_id,
+                                      reason=event.reason,
+                                      distance_mm=event.distance_mm)
+
+        self._resume_cleared(at_risk)
+
+    def _resume_cleared(self, at_risk: set[int]) -> None:
+        """위험이 해소된 차량을 재개한다 (충돌로 세운 차량만 대상)."""
+        for car_id in list(self._collision_held):
+            if car_id in at_risk:
+                continue
+            if car_id in self._comm_lost:
+                continue      # 링크가 죽어 있다. 복구 시 재계획으로 풀린다
+            self._collision_held.discard(car_id)
+            m = self.orchestrator.missions.get(car_id)
+            if m is not None and m.state is MissionState.HELD:
+                log.info("collision cleared: car %d resumes", car_id)
+                self.orchestrator.resume(car_id)
+                self.dashboard.push_event("vehicle_resume", car_id=car_id)
+
+    # ─── 콜백 ────────────────────────────────────────────────────────────────
+
+    def _on_parked(self, car_id: int, slot_id: str) -> None:
+        log.info("car %d PARKED at %s", car_id, slot_id)
+        self.allocator.set_slot_occupied(slot_id, True)
+        # 주차를 마친 차량은 더 이상 통로를 점유하지 않는다 → 혼잡 계산에서 제외
+        track_id = self.track_of_car.get(car_id)
+        tracked = self.allocator.vehicles.get(track_id) if track_id is not None else None
+        if tracked is not None:
+            tracked.route = []
+        self.dashboard.push_event("parked", car_id=car_id, slot=slot_id)
+
+    def _on_replan_required(self, car_id: int, reason: str) -> None:
+        """현재 pose 기준으로 새 route_id 경로를 만들어 재시작한다 (§32)."""
+        track_id = self.track_of_car.get(car_id)
+        view = self.views.get(track_id) if track_id is not None else None
+        mission = self.orchestrator.missions.get(car_id)
+        if view is None or mission is None or mission.slot_id is None:
+            log.warning("car %d replan requested (%s) but no pose/slot", car_id, reason)
+            return
+        node = view.node or position_to_node(view.position_mm)
+        route_id = self.orchestrator.next_route_id()
+        spec = default_slot_specs()[mission.slot_id]
+        nodes = [node] if node else None
+        wps = build_waypoints(spec, route_id=route_id, route_nodes=nodes)
+        log.info("car %d replanning from %s (%s) → route %d", car_id, node, reason, route_id)
+        ctrl = self.controllers.get(car_id)
+        if ctrl is not None:
+            ctrl.reset()          # 경로가 바뀌면 이전 오차 미분항은 무의미하다
+        self.orchestrator.regenerate(car_id, wps)
+
+    def _on_comm_fail(self, car_id: int, info: dict[str, Any]) -> None:
+        """통신 장애 — 미션을 정지 상태로 두고 복구를 기다린다.
+
+        서버가 장애 시작 엣지에서만 부르므로 여기서 다시 debounce 하지 않는다.
+        차량 자체는 펌웨어 COMM_TIMEOUT 으로 안전정지하므로 명령을 보내지 않는다.
+        """
+        kind = info.get("type", "COMM_FAIL")
+        with self._lock:
+            self._comm_lost.add(car_id)
+        held = self.orchestrator.mark_link_lost(car_id)
+        log.warning("car %d comm fail (%s) — mission %s",
+                    car_id, kind, "held" if held else "none active")
+        self.dashboard.push_event("comm_fail", car_id=car_id, reason=kind)
+
+    def _on_comm_recovered(self, car_id: int) -> None:
+        """통신 복구 — 단절 중 위치를 신뢰할 수 없으므로 현재 pose 로 재계획한다."""
+        with self._lock:
+            if car_id not in self._comm_lost:
+                return
+            self._comm_lost.discard(car_id)
+        log.info("car %d comm recovered — replanning from current pose", car_id)
+        self.dashboard.push_event("comm_recovered", car_id=car_id)
+        self._on_replan_required(car_id, "COMM_RECOVERED")
+
+    def _on_resync(self, car_id: int, hello: dict[str, Any]) -> None:
+        self._manual_shell_starting.discard(car_id)
+        """재접속·재부팅 후에는 기존 경로를 폐기하고 재계획한다 (§21·26)."""
+        log.info("car %d resync (boot_id=%s) — discarding route",
+                 car_id, hello.get("boot_id"))
+        mux = self.hybrid_controls.pop(car_id, None)
+        if mux is not None:
+            try:
+                mux.stop()
+            except Exception:
+                pass
+        runner = self.auto_host_runners.pop(car_id, None)
+        if runner is not None:
+            try:
+                runner.stop()
+            except Exception:
+                pass
+        self.orchestrator.missions.pop(car_id, None)
+        with self._lock:
+            self._comm_lost.discard(car_id)      # 새 세션이므로 복구 재계획은 불필요
+            self._mode_set.discard(car_id)       # 새 세션에서 모드를 다시 잡는다
+            self.controllers.pop(car_id, None)
+            self.last_control.pop(car_id, None)
+            self._last_control_mode.pop(car_id, None)
+            track_id = self.track_of_car.pop(car_id, None)
+            if track_id is not None and track_id in self.views:
+                self.views[track_id].car_id = None
+                self.views[track_id].slot_id = None
+
+    def _hold_check(self, car_id: int, hello: dict[str, Any]) -> str | None:
+        """HELLO 판정 훅 — 카메라가 차량을 못 보면 매핑 불가이므로 HOLD (H3)."""
+        if not str(hello.get("motor_stopped", "true")).lower() in ("true", "1"):
+            return "MOTOR_NOT_CONFIRMED_STOPPED"
+        return None
+
+    def _forget_stale(self, frame_index: int, max_age: int = 60) -> None:
+        """오래 안 보이는 track 정리 (탐지 유실 대비 여유를 둔다)."""
+        with self._lock:
+            stale = [t for t, v in self.views.items()
+                     if frame_index - v.last_seen_frame > max_age and v.car_id is None]
+            for t in stale:
+                self.views.pop(t, None)
+                self.heading.remove(t)
+                self.allocator.remove_vehicle(t)

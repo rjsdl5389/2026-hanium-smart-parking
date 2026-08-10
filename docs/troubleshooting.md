@@ -1227,3 +1227,34 @@ YYYY-MM-DD
 10. 실제 결과와 추정 원인을 명확히 구분한다.
 11. 문제 해결 전후의 로그·사진·영상을 남긴다.
 12. 해결된 문제도 삭제하지 않고 개발 이력으로 유지한다.
+
+---
+
+## 2026-08-10 — READY인데 GUI가 UNAVAILABLE
+
+### 증상
+
+ESP32 로그에서는 TCP 연결, HELLO_ACK, SET_MODE, DIRECT_CONTROL이 정상인데 GUI는 `UNAVAILABLE`에 머무름.
+
+### 원인
+
+`ControllerConfig`가 `@dataclass(frozen=True)`인데 MANUAL 진입 시 `host.config.max_throttle`과 `allow_reverse`를 직접 대입해 `FrozenInstanceError` 발생. READY callback의 manual shell 생성이 중간에 실패함.
+
+### 해결
+
+원본 AUTO config를 수정하지 않고:
+
+```python
+manual_cfg = dataclasses.replace(
+    host.config,
+    max_throttle=1.0,
+    allow_reverse=True,
+)
+host.manual_producer = ManualControlProducer(manual_cfg)
+```
+
+형태로 MANUAL producer에만 별도 immutable config를 적용.
+
+### 추가 네트워크 확인
+
+Windows 모바일 핫스팟이 꺼져 있으면 ESP32가 SSID 재접속을 반복한다. 실제 TCP 문제를 보기 전에 hotspot ON과 ESP32 IPv4 획득 여부를 먼저 확인한다.

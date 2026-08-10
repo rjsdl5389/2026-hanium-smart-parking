@@ -1,0 +1,21 @@
+.DS_Store
+.env
+*.pyc
+__pycache__/
+.pytest_cache/
+db.sqlite3
+staticfiles/
+media/
+.coverage
+htmlcov/
+
+# YOLO 가중치 및 추론 결과물
+*.pt
+*.mp4
+*.gif
+*.png
+models/
+outputs/
+runs/
+tb_logs/
+cv/yolotest.py

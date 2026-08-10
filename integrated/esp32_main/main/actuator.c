@@ -38,7 +38,7 @@ static double lerpd(double a, double b, double t)
 
 /*
  * Piecewise steering calibration from the 2026-07-29 bench test:
- *   -1.0 -> 50°, -0.5 -> 68°, 0 -> 86°, +0.5 -> 104°, +1.0 -> 122°.
+ *   -1.0 -> 30°, -0.5 -> 60°, 0 -> 86°, +0.5 -> 112°, +1.0 -> 122°.
  */
 static double steering_to_angle(double steering)
 {
@@ -58,7 +58,7 @@ static double steering_to_angle(double steering)
 /*
  * Steering-dependent motor profile, also from the 2026-07-29 bench test:
  *   straight: min 15, default 27
- *   medium turn (|steering|=0.5): min 35, default 45
+ *   weak turn (|steering|=0.5): min 35, default 45
  *   strong turn (|steering|=1.0): default 55
  *
  * A normalized throttle magnitude of 1.0 selects the calibrated default duty
@@ -215,7 +215,7 @@ void actuator_safe_stop(const char *reason)
 
 void actuator_start_motion(void)
 {
-    ESP_LOGI(TAG, "WAYPOINT_AUTO start hook called; control loop must apply actuator output");
+    ESP_LOGI(TAG, "MOVING (WAYPOINT_AUTO); direct output governed by control task");
 }
 
 void actuator_apply_direct(double throttle, double steering, actuator_output_t *out)

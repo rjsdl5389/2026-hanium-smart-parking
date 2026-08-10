@@ -1,21 +1,47 @@
 # ESP-IDF generated files
 integrated/esp32_main/build/
 integrated/esp32_main/sdkconfig.old
+integrated/esp32_main/sdkconfig
+integrated/esp32_main/managed_components/
+
+# Local ESP32 configuration containing Wi-Fi/server credentials
+integrated/esp32_main/main/app_config.h
+
+# Integrated host local/runtime files
+integrated/host/.env
+integrated/host/db.sqlite3
+integrated/host/staticfiles/
+integrated/host/media/
+integrated/host/models/
+integrated/host/outputs/
+integrated/host/runs/
+integrated/host/tb_logs/
 
 # Python generated files
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Model weights / large runtime artifacts
+*.pt
+*.pth
+*.onnx
+*.engine
+*.mp4
+*.mov
+*.avi
 
 # Local editor/system files
 .vscode/*.log
 .DS_Store
 Thumbs.db
 
-# Local ESP32 configuration containing Wi-Fi/server information
-integrated/esp32_main/main/app_config.h
-integrated/esp32_main/sdkconfig
-integrated/esp32_main/managed_components/
-
 # Temporary and backup files
 *.bak
 *.log
+*.tmp
+*.zip
+*.7z
+*.rar

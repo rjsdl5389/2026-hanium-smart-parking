@@ -376,3 +376,24 @@ ERROR
 
 - 
 ```
+
+---
+
+## 2026-08-10
+
+### 완료
+
+- backend 기반 최신 통합 tree에 controller / host_control / integration / AUTO_HOST 계층을 결합했다.
+- `MANUAL_WASD ↔ AUTO_HOST` 전환을 구현했다.
+- ESP32 READY 직후 camera/mission 없이 manual shell을 사용할 수 있게 했다.
+- MANUAL → AUTO 전환 시 `AUTO_PENDING`에서 fresh camera pose를 기다리도록 수정했다.
+- 실제 ESP32 HIL에서 Wi-Fi/TCP/HELLO/REMOTE_DIRECT/DIRECT_CONTROL을 확인했다.
+- 실제 모터·서보 출력으로 전진/후진/조향을 확인했다.
+- frozen `ControllerConfig` 직접 수정 문제를 제거하고 MANUAL producer 전용 config 복사본을 적용했다.
+- 최종 회귀 테스트 164/164를 통과했다.
+
+### 다음 작업
+
+- SW팀 마우스 클릭 waypoint + camera pose를 최신 AUTO_HOST와 실차 연동한다.
+- 실제 waypoint 주행에서 회전반경을 확인한다.
+- 필요 시 servo strong/weak 운용각만 단계적으로 보정한다.

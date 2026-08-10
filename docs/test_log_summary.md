@@ -887,3 +887,38 @@ Waypoint
 10. 문제 발생 시 직전 정상 단계로 돌아가 원인을 분리한다.
 11. 수치는 테스트 시작값과 최종 확정값을 구분한다.
 12. 사진·영상·로그를 가능한 한 증빙자료로 남긴다.
+
+---
+
+## 2026-08-10 — AUTO_HOST / MANUAL_WASD 실제 ESP32 HIL
+
+### 자동 회귀
+
+```text
+controller      32/32 OK
+host_control    59/59 OK
+integration     24/24 OK
+comm            31/31 OK
+pipeline        18/18 OK
+total          164/164 OK
+```
+
+### 실차 HIL
+
+- ESP32 local hotspot join 성공
+- TCP server port 5000 연결 성공
+- HELLO/HELLO_ACK 성공
+- SET_MODE REMOTE_DIRECT 성공
+- HEARTBEAT 지속 수신
+- DIRECT_CONTROL 지속 수신
+- 실제 actuator output 전진 성공
+- 실제 actuator output 후진 성공
+- 좌/우 조향 성공
+- STOP/neutral 복귀 성공
+
+### 최종 수동 설정
+
+- MANUAL max_throttle: 1.0
+- MANUAL allow_reverse: true
+- AUTO max_throttle: 0.40 유지
+- AUTO reverse: false 유지

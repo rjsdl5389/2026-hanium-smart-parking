@@ -26,10 +26,9 @@ static void initialize_nvs(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Hanium ESP32 control firmware starting");
+    ESP_LOGI(TAG, "Hanium REMOTE_DIRECT encoder v3 firmware starting");
     ESP_LOGI(TAG, "Firmware version: %s", FIRMWARE_VERSION);
     ESP_LOGW(TAG, "ENABLE_ACTUATOR_OUTPUT=%d", ENABLE_ACTUATOR_OUTPUT);
-    ESP_LOGW(TAG, "ENABLE_WAYPOINT_AUTO_CONTROL=%d", ENABLE_WAYPOINT_AUTO_CONTROL);
     ESP_LOGW(TAG, "DAY3_ALLOW_GO_WITHOUT_POSE=%d", DAY3_ALLOW_GO_WITHOUT_POSE);
 
     initialize_nvs();

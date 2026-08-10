@@ -1,3 +1,5 @@
+> **2026-08-10 현재 통합 기준:** 자동주행의 주 경로는 노트북 `AUTO_HOST`가 Camera Pose와 waypoint로 `DIRECT_CONTROL`을 계산해 ESP32 `REMOTE_DIRECT`로 보내는 구조다. 이 문서의 ESP32-side WAYPOINT 추종 내용은 기존/대안 설계 기록으로 유지한다. 최신 기준은 `implementation_status.md`와 `integration_status_2026-08-10.md`를 우선한다.
+
 # 상위 소프트웨어–ESP32 연동 인터페이스 설계
 
 ## 1. 문서 목적
