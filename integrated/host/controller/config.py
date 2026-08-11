@@ -43,7 +43,7 @@ class FirmwareConstants:
     pwm_forward_default: int = 22
     pwm_turn_min: int = 32
     pwm_turn_default: int = 40
-    pwm_strong_turn_min: int = 32
+    pwm_strong_turn_min: int = 38
     pwm_strong_turn_default: int = 50
     motor_pwm_max_duty: int = 255
     motor_deadband_throttle: float = 0.02

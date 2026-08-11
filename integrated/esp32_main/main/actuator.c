@@ -64,7 +64,7 @@ static double steering_to_angle(double steering)
  * Steering-dependent motor profile (latest real-car calibration):
  *   straight: min 12, default 22
  *   weak turn (|steering|=0.5): min 32, default 40
- *   strong turn (|steering|=1.0): min 32, default 50
+ *   strong turn (|steering|=1.0): min 38, default 50
  *
  * 이전 구현은 |steering|=1.0에서 min==default==strong default가 되어 host
  * throttle이 완전히 무시됐다. 아래 mapping은 강조향에서도 최소 토크 floor와

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #define WIFI_SSID "YOUR_WIFI_SSID"
 #define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
@@ -63,7 +63,7 @@
 #define PWM_FORWARD_DEFAULT 22
 #define PWM_TURN_MIN 32
 #define PWM_TURN_DEFAULT 40
-/* Strong-turn?먯꽌??host throttle???댁븘 ?덈룄濡?理쒖냼/湲곕낯 PWM??遺꾨━. */
+/* Strong-turn minimum is separated so host throttle remains effective at full steering. */
 #define PWM_STRONG_TURN_MIN 38
 #define PWM_STRONG_TURN_DEFAULT 50
 
