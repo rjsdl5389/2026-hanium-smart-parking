@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #define WIFI_SSID "YOUR_WIFI_SSID"
 #define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
@@ -59,11 +59,13 @@
 #define MOTOR_FORWARD_DIR_LEVEL 1
 #define MOTOR_REVERSE_DIR_LEVEL 0
 
-#define PWM_FORWARD_MIN 15
-#define PWM_FORWARD_DEFAULT 27
-#define PWM_TURN_MIN 35
-#define PWM_TURN_DEFAULT 45
-#define PWM_STRONG_TURN_DEFAULT 55
+#define PWM_FORWARD_MIN 12
+#define PWM_FORWARD_DEFAULT 22
+#define PWM_TURN_MIN 32
+#define PWM_TURN_DEFAULT 40
+/* Strong-turn?먯꽌??host throttle???댁븘 ?덈룄濡?理쒖냼/湲곕낯 PWM??遺꾨━. */
+#define PWM_STRONG_TURN_MIN 38
+#define PWM_STRONG_TURN_DEFAULT 50
 
 /*
  * Servo and motor use independent LEDC timers.
@@ -76,11 +78,11 @@
 
 #define SERVO_PWM_FREQ_HZ 50
 #define SERVO_PWM_RES_BITS 14
-#define SERVO_LEFT_STRONG_DEG 50.0
-#define SERVO_LEFT_WEAK_DEG 68.0
+#define SERVO_LEFT_STRONG_DEG 46.0
+#define SERVO_LEFT_WEAK_DEG 66.0
 #define SERVO_CENTER_DEG 86.0
-#define SERVO_RIGHT_WEAK_DEG 104.0
-#define SERVO_RIGHT_STRONG_DEG 122.0
+#define SERVO_RIGHT_WEAK_DEG 106.0
+#define SERVO_RIGHT_STRONG_DEG 126.0
 #define SERVO_MIN_PULSE_US 500.0
 #define SERVO_MAX_PULSE_US 2400.0
 #define SERVO_FULL_SWEEP_DEG 180.0

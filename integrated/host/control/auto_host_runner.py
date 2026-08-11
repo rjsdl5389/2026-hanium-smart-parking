@@ -43,15 +43,63 @@ class AutoHostRunner:
         self.scheduler.start()
 
     def load_waypoints(self, backend_waypoints) -> None:
-        """Replace the mission while reusing the same host/TCP/session chain."""
-        self.host.mission = HostWaypointMission(
-            waypoints_from_backend(backend_waypoints)
-        )
-        self.host.auto_producer.reset()
+        """새 primary route 로 교체한다. fresh camera pose 전까지 zero 유지."""
+        mapped = waypoints_from_backend(backend_waypoints)
+        # route 를 갈아끼우는 순간 기존 pose/제어값을 재사용하지 않는다.
+        # 즉시 zero를 내보내고 pose_source 를 비운 뒤 새 route 를 RUNNING 으로 연다.
+        self.host.prepare_route_switch()
+        self.host.mission.load(mapped)
+
+    def load_recovery_waypoints(self, backend_waypoints):
+        """REPLAN_REQUIRED → recovery route 삽입 → RUNNING 전환.
+
+        recovery waypoint 완료 뒤 mission 이 실패했던 기존 target과 남은 route로
+        자동 복귀한다. 실제 recovery 경로 생성은 backend planner 몫이다.
+
+        안전 규칙: recovery route 를 받는 순간 즉시 zero + 기존 pose 폐기.
+        그 뒤 새 카메라 관측이 들어오기 전까지 HostController 는 NO_POSE zero만
+        내보낸다. 즉 REPLAN_REQUIRED 에서 임의로 재출발하지 않는다.
+        """
+        mapped = waypoints_from_backend(backend_waypoints)
+        self.host.prepare_route_switch()
+        status = self.host.mission.load_recovery(mapped)
+        return status
 
     def on_camera_pose(self, x_mm, y_mm, heading_deg, obs_time) -> None:
         """CV 파이프라인 콜백. 새 프레임에서만 호출. control 계산은 하지 않는다."""
         self.host.pose_source.observe(x_mm, y_mm, heading_deg, obs_time)
+
+    @property
+    def current_target(self):
+        return self.host.mission.current_target()
+
+    @property
+    def current_phase(self):
+        return self.host.mission.current_phase
+
+    @property
+    def parking_active(self) -> bool:
+        return self.host.mission.parking_active
+
+    @property
+    def approach_stage(self) -> str:
+        return self.host.approach_guard.stage.value
+
+    @property
+    def approach_best_distance_cm(self):
+        return self.host.approach_guard.best_distance_cm
+
+    @property
+    def replan_reason(self):
+        return self.host.mission.replan_reason
+
+    @property
+    def final_confirm_count(self) -> int:
+        return self.host.final_pose_guard.count
+
+    @property
+    def final_confirm_required(self) -> int:
+        return self.host.final_pose_guard.required
 
     def set_manual_input(self, manual: Optional[ManualInput]) -> None:
         self.scheduler.set_manual_input(manual)

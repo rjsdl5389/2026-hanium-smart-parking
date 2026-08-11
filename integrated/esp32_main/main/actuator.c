@@ -7,6 +7,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+/* Local app_config.h is gitignored; keep old local configs buildable. */
+#ifndef PWM_STRONG_TURN_MIN
+#define PWM_STRONG_TURN_MIN PWM_TURN_MIN
+#endif
+
 #if ENABLE_ACTUATOR_OUTPUT
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -56,14 +61,14 @@ static double steering_to_angle(double steering)
 }
 
 /*
- * Steering-dependent motor profile, also from the 2026-07-29 bench test:
- *   straight: min 15, default 27
- *   weak turn (|steering|=0.5): min 35, default 45
- *   strong turn (|steering|=1.0): default 55
+ * Steering-dependent motor profile (latest real-car calibration):
+ *   straight: min 12, default 22
+ *   weak turn (|steering|=0.5): min 32, default 40
+ *   strong turn (|steering|=1.0): min 32, default 50
  *
- * A normalized throttle magnitude of 1.0 selects the calibrated default duty
- * for the current steering profile. Any non-zero value above the deadband is
- * interpolated from that profile's minimum to default duty.
+ * 이전 구현은 |steering|=1.0에서 min==default==strong default가 되어 host
+ * throttle이 완전히 무시됐다. 아래 mapping은 강조향에서도 최소 토크 floor와
+ * throttle-controlled range를 분리해 저속 정밀주차/후진 recovery를 가능하게 한다.
  */
 static int throttle_to_duty(double throttle, double steering)
 {
@@ -80,7 +85,7 @@ static int throttle_to_duty(double throttle, double steering)
         default_duty = lerpd(PWM_FORWARD_DEFAULT, PWM_TURN_DEFAULT, t);
     } else {
         const double t = (abs_steering - 0.5) / 0.5;
-        min_duty = lerpd(PWM_TURN_MIN, PWM_STRONG_TURN_DEFAULT, t);
+        min_duty = lerpd(PWM_TURN_MIN, PWM_STRONG_TURN_MIN, t);
         default_duty = lerpd(PWM_TURN_DEFAULT, PWM_STRONG_TURN_DEFAULT, t);
     }
 
