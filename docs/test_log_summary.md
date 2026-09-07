@@ -1,5 +1,50 @@
 # 테스트 로그 요약
 
+## 2026-09-07 최종 통합 검증 요약
+
+현재 production 경로는 노트북 `AUTO_HOST`가 Camera Pose를 폐루프로 사용해
+`HostController`에서 throttle/steering을 계산하고, TCP/NDJSON
+`DIRECT_CONTROL`을 ESP32 `REMOTE_DIRECT`에 전달하는 구조다. 아래 결과는
+현재 로컬 working tree와 실제 run 기록을 기준으로 하며, 이 문서의 이후 구형
+`WAYPOINT/GO/WAIT` 시험표는 초기 설계 이력으로 남겨 둔다.
+
+### 자동화 회귀
+
+| 시험 | 결과 | 비고 |
+|---|---|---|
+| production parking/control 집중 회귀 | **226 tests 통과** | `tools/run_auto_parking_tests.py` |
+| Backend 전체 Django 회귀 | **1157 tests 통과, 1 skip** | `manage.py test --verbosity 1`, system check 0 issue |
+| REMOTE_DIRECT bridge 회귀 | **51 tests 중 1 failure** | local firmware/bridge WIP의 example과 configuration-contract test 기대값 불일치 |
+| production wire 검사 | 통과 | AUTO_HOST에서 `WAYPOINT/GO` 송신 없음 |
+| unsafe trajectory load 검사 | 통과 | GLOBAL/rear/setup/recovery 공통 preflight gate |
+
+Bridge의 1건은 local firmware/bridge WIP에 이미 존재한 version/PWM calibration
+기대값 불일치가 한 test 안에서 확인된 것이며, runtime 기능 경로 실패와 구분한다.
+문서 정리 과정에서 차량 동작 코드는 변경하지 않았다.
+
+### 대표 실차 E2E 증거
+
+| run | 결과 | 확인 내용 |
+|---|---|---|
+| `run_20260831_002703` | A2 `PARKED` | fresh Pose 3회 확인 후 최종 판정 |
+| `run_20260903_230921` | A2 `PARKED` | stale Pose recovery 후 완료 |
+| `run_20260904_000722` | B1 `PARKED` | boundary/final recovery 후 완료 |
+| `run_20260904_183055` | A2 `PARKED` | ENTRY staging 포함 후면주차 완료 |
+| `run_20260904_183503` | A2 `PARKED` | ENTRY staging 포함 후면주차 완료 |
+
+### 검증 범위의 정확한 한계
+
+- 카메라에 보이는 수동 배치 차량을 슬롯 `VISION_OCCUPIED`로 자동 전환하는 기능은
+  현재 구현되지 않았다. 따라서 해당 시나리오를 완료 검증으로 기록하지 않는다.
+- 두 차량 동시 자율주행은 검증하지 않았다. 여러 차량이 연결돼도 한 번에 하나의
+  `AUTO_HOST` 차량만 움직이고 나머지는 zero/hold한다.
+- PPO 환경과 정책 추론 경로는 구현되어 있으나 현재 검증 venv에는
+  `sb3-contrib`가 없어 deterministic nearest-slot fallback이 사용됐다.
+- `e2e.mp4`는 육안 검증 자료이며 fixed writer FPS를 실제 wall-clock 정량값으로
+  사용하지 않는다. 정량 판정은 pose/control/events/routes와 ESP 상태 로그를 우선한다.
+
+---
+
 ## 1. 문서 목적
 
 본 문서는 자율주행 기반 지능형 주차 운영 시스템의 하드웨어, 임베디드 펌웨어, 통신, 인식, 경로 추종 및 통합 시연 테스트 결과를 누적 관리하기 위한 문서이다.
