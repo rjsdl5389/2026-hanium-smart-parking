@@ -16,12 +16,13 @@ STEERING_RAMP_STEP = 0.10
 STEERING_RAMP_FAST_STEP = 0.20
 STEERING_RAMP_INTERVAL_MS = 100
 
-# Mirrors the verified ESP32 v5.3.1 calibration. Firmware remains GPIO authority.
-PWM_FORWARD_MIN = 15.0
-PWM_FORWARD_DEFAULT = 27.0
-PWM_TURN_MIN = 35.0
-PWM_TURN_DEFAULT = 45.0
-PWM_STRONG_TURN_DEFAULT = 55.0
+# Mirrors the verified CAR_01 firmware contract. Firmware remains GPIO authority.
+PWM_FORWARD_MIN = 16.0
+PWM_FORWARD_DEFAULT = 25.0
+PWM_TURN_MIN = 34.0
+PWM_TURN_DEFAULT = 43.0
+PWM_STRONG_TURN_MIN = 40.0
+PWM_STRONG_TURN_DEFAULT = 54.0
 
 
 @dataclass(frozen=True)
@@ -120,7 +121,7 @@ def expected_actuator(throttle: float, steering: float) -> tuple[int, float, str
     """Return expected calibrated PWM, servo angle and direction.
 
     Steering is piecewise interpolated through the verified operational points:
-    -1.0=50°, -0.5=68°, 0=86°, +0.5=104°, +1.0=122°.  These endpoints remain
+    -1.0=46°, -0.5=66°, 0=86°, +0.5=106°, +1.0=126°.  These endpoints remain
     inside the separately measured mechanical limits.
     """
     throttle = max(-1.0, min(1.0, float(throttle)))
@@ -128,16 +129,16 @@ def expected_actuator(throttle: float, steering: float) -> tuple[int, float, str
 
     if steering <= -0.5:
         t = (steering + 1.0) / 0.5
-        angle = 50.0 + (68.0 - 50.0) * t
+        angle = 46.0 + (66.0 - 46.0) * t
     elif steering < 0.0:
         t = (steering + 0.5) / 0.5
-        angle = 68.0 + (86.0 - 68.0) * t
+        angle = 66.0 + (86.0 - 66.0) * t
     elif steering <= 0.5:
         t = steering / 0.5
-        angle = 86.0 + (104.0 - 86.0) * t
+        angle = 86.0 + (106.0 - 86.0) * t
     else:
         t = (steering - 0.5) / 0.5
-        angle = 104.0 + (122.0 - 104.0) * t
+        angle = 106.0 + (126.0 - 106.0) * t
 
     magnitude = abs(throttle)
     if magnitude <= 0.02:
@@ -153,7 +154,7 @@ def expected_actuator(throttle: float, steering: float) -> tuple[int, float, str
         else:
             t = (abs_steer - 0.5) / 0.5
             min_duty = PWM_TURN_MIN + (
-                PWM_STRONG_TURN_DEFAULT - PWM_TURN_MIN
+                PWM_STRONG_TURN_MIN - PWM_TURN_MIN
             ) * t
             default_duty = PWM_TURN_DEFAULT + (
                 PWM_STRONG_TURN_DEFAULT - PWM_TURN_DEFAULT
