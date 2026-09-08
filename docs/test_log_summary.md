@@ -1,5 +1,51 @@
 # 테스트 로그 요약
 
+## 2026-09-08 최종 통합 검증 요약
+
+현재 production 경로는 노트북 `AUTO_HOST`가 Camera Pose를 폐루프로 사용해
+`HostController`에서 throttle/steering을 계산하고, TCP/NDJSON
+`DIRECT_CONTROL`을 ESP32 `REMOTE_DIRECT`에 전달하는 구조다. 아래 결과는
+현재 로컬 working tree와 실제 run 기록을 기준으로 하며, 이 문서의 이후 구형
+`WAYPOINT/GO/WAIT` 시험표는 초기 설계 이력으로 남겨 둔다.
+
+### 자동화 회귀
+
+| 시험 | 결과 | 비고 |
+|---|---|---|
+| production parking/control 집중 회귀 | **226 tests 통과** | `tools/run_auto_parking_tests.py` |
+| Backend 전체 Django 회귀 | **1157 tests 통과, 1 skip** | `manage.py test --verbosity 1`, system check 0 issue |
+| REMOTE_DIRECT bridge 회귀 | **51/51 tests 통과** | outdated configuration-contract와 mock 기대값을 현재 working-tree CAR_01 contract에 맞게 정정 후 재실행 |
+| production wire 검사 | 통과 | AUTO_HOST에서 `WAYPOINT/GO` 송신 없음 |
+| unsafe trajectory load 검사 | 통과 | GLOBAL/rear/setup/recovery 공통 preflight gate |
+
+Bridge의 기존 1건은 실제 firmware/example이 아니라 과거 version/PWM 값을 기대한
+configuration-contract test와 mock infrastructure 문제였다. test/mock 기대값만
+현재 working-tree CAR_01 contract에 맞췄고
+firmware, PWM, servo calibration과 차량 동작 코드는 변경하지 않았다.
+
+### 대표 실차 E2E 증거
+
+| run | 결과 | 확인 내용 |
+|---|---|---|
+| `run_20260831_002703` | A2 `PARKED` | fresh Pose 3회 확인 후 최종 판정 |
+| `run_20260903_230921` | A2 `PARKED` | stale Pose recovery 후 완료 |
+| `run_20260904_000722` | B1 `PARKED` | boundary/final recovery 후 완료 |
+| `run_20260904_183055` | A2 `PARKED` | ENTRY staging 포함 후면주차 완료 |
+| `run_20260904_183503` | A2 `PARKED` | ENTRY staging 포함 후면주차 완료 |
+
+### 검증 범위의 정확한 한계
+
+- Backend [`release/hanium-2026-final @ 15043f3`](https://github.com/hanium-2026-project/backend/tree/15043f3ec583cdab5f9519cdc3ad2e103dcf8d49)에 camera-only `VISION_OCCUPIED`, allocator 제외, `STATIC_PARKED` planning obstacle이 구현되었다.
+- 점유 확정 전 allocation gate는 없으므로 “정적 차량 배치 → `VISION_SLOT_OCCUPIED` 확인 → 자율차 활성화” 순서가 필요하다. 위 대표 단일차량 run만으로 이 전체 실차 시나리오를 완료 검증했다고 표현하지 않는다.
+- 두 차량 동시 자율주행은 검증하지 않았다. 여러 차량이 연결돼도 한 번에 하나의
+  `AUTO_HOST` 차량만 움직이고 나머지는 zero/hold한다.
+- PPO 환경과 정책 추론 경로는 구현되어 있으나 현재 검증 venv에는
+  `sb3-contrib`가 없어 deterministic nearest-slot fallback이 사용됐다.
+- `e2e.mp4`는 육안 검증 자료이며 fixed writer FPS를 실제 wall-clock 정량값으로
+  사용하지 않는다. 정량 판정은 pose/control/events/routes와 ESP 상태 로그를 우선한다.
+
+---
+
 ## 1. 문서 목적
 
 본 문서는 자율주행 기반 지능형 주차 운영 시스템의 하드웨어, 임베디드 펌웨어, 통신, 인식, 경로 추종 및 통합 시연 테스트 결과를 누적 관리하기 위한 문서이다.

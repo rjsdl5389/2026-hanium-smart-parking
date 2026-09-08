@@ -1,5 +1,54 @@
 # 개발 로그
 
+## 2026-09-08 — 최종 시스템 통합 정리
+
+### 확정된 production 구조
+
+- 노트북이 고정 카메라의 YOLO/OpenCV 검출과 Homography를 이용해 차량 Pose를 만들고,
+  슬롯 배정·경로 생성·복구·재계획과 `HostController` 폐루프 제어를 담당한다.
+- 노트북은 계산된 throttle/steering을 TCP/NDJSON `DIRECT_CONTROL`로 전송한다.
+- ESP32는 `REMOTE_DIRECT`에서 명령을 검증하고 모터/서보를 구동하며, watchdog과
+  통신 단절 시 즉시 safe-stop을 담당한다.
+- 초기 ESP32-side `WAYPOINT_AUTO`, `GO/WAIT` 중심 설계는 호환·실험 경로로 남지만
+  최종 실차 production 경로에는 사용하지 않는다.
+
+### 8–9월 통합 과정에서 확정한 안전 원칙
+
+- route 종류와 관계없이 load 전에 공통 trajectory safety validator를 통과해야 한다.
+- stale Pose 또는 critical planning 시 신뢰할 fresh heading이 없으면 zero/hold한다.
+- 전진↔후진 전환과 route 교체는 먼저 zero를 보낸 뒤 새 camera observation을 요구한다.
+- 통신 단절 시 명령을 재개하지 않고 zero latch → 새 session 동기화 → RESET →
+  SET_MODE → fresh Pose/heading → 현재 Pose 기준 재계획 순서로 복구한다.
+- 주차 waypoint는 수단이며 슬롯의 최종 물리 Pose가 목표다. handoff/setup/recovery
+  완료는 terminal capture와 fresh Pose 전환을 우선한다.
+- `PARKED`는 단일 프레임이 아니라 연속 fresh Pose와 heading/depth/footprint 조건으로
+  확인하며, `FINAL_ALIGNMENT`는 작은 잔여 오차에 대한 bounded fallback으로 제한한다.
+
+### 주요 실차 blocker와 해결 방향
+
+- 도달 불가능한 첫 슬롯이 전체 camera/TCP loop를 종료하던 문제를 candidate 단위
+  reject/fallback으로 변경하고, 경로 생성보다 Pose 기록을 먼저 수행했다.
+- stale `LAST_VALID` heading으로 새 mission이 시작되지 않도록 critical planning
+  boundary에서 fresh/recent heading을 요구했다.
+- terminal waypoint를 조금 지나친 뒤 같은 waypoint를 재생성하던 loop는 capture
+  tolerance와 parking/setup 전환으로 차단했다.
+- rear route load 직후 첫 waypoint에서 이전 route 상태가 deviation 판정을 선점하던
+  문제는 route-load state reset과 acquisition contract로 정리했다.
+- map boundary는 detection bbox가 아니라 차량 physical footprint로 판정하고,
+  measurement-aware hard tolerance를 안전 판정에만 적용했다.
+
+### 현재 한계
+
+- Backend final release에 camera-only `VISION_OCCUPIED` 확정, allocator 제외,
+  `STATIC_PARKED` obstacle 반영은 구현됐다. 단 점유 확정 전 allocation을
+  막는 gate는 없어 정적 차량을 먼저 확정한 후 자율차를 활성화해야 한다.
+- 다중 차량 연결/대기와 obstacle 반영은 있으나 두 차량 동시 자율주행은 지원·검증
+  범위가 아니다.
+- PPO 환경·정책 코드는 구현돼 있으나 HIL은 의존성/모델 가용성에 따라 deterministic
+  fallback을 사용하며, 과거 개별 run의 policy provenance는 recorder로 확정할 수 없다.
+
+---
+
 ## 1. 문서 목적
 
 본 문서는 자율주행 기반 지능형 주차 운영 시스템의 일자별 개발 과정과 주요 의사결정을 기록한다.
