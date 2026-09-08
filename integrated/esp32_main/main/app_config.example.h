@@ -6,7 +6,7 @@
 #define SERVER_PORT 5000
 
 #define CAR_ID "CAR_01"
-#define FIRMWARE_VERSION "0.5.3-logic-hardening"
+#define FIRMWARE_VERSION "0.5.6-transport-rto1000"
 #define PROTOCOL_VERSION 1
 
 #define MAX_NDJSON_LINE_LENGTH 512
@@ -59,11 +59,16 @@
 #define MOTOR_FORWARD_DIR_LEVEL 1
 #define MOTOR_REVERSE_DIR_LEVEL 0
 
-#define PWM_FORWARD_MIN 15
-#define PWM_FORWARD_DEFAULT 27
-#define PWM_TURN_MIN 35
-#define PWM_TURN_DEFAULT 45
-#define PWM_STRONG_TURN_DEFAULT 55
+#define PWM_FORWARD_MIN 16
+#define PWM_FORWARD_DEFAULT 25
+#define PWM_TURN_MIN 34
+#define PWM_TURN_DEFAULT 43
+/* Strong-turn minimum is separated so host throttle remains effective at full steering. */
+#define PWM_STRONG_TURN_MIN 40
+#define PWM_STRONG_TURN_DEFAULT 54
+#define DIRECT_STALL_TIMEOUT_MS 2000
+#define DIRECT_STALL_BOOST_MS 300
+#define DIRECT_STALL_BOOST_PWM PWM_STRONG_TURN_DEFAULT
 
 /*
  * Servo and motor use independent LEDC timers.
@@ -76,11 +81,11 @@
 
 #define SERVO_PWM_FREQ_HZ 50
 #define SERVO_PWM_RES_BITS 14
-#define SERVO_LEFT_STRONG_DEG 50.0
-#define SERVO_LEFT_WEAK_DEG 68.0
+#define SERVO_LEFT_STRONG_DEG 46.0
+#define SERVO_LEFT_WEAK_DEG 66.0
 #define SERVO_CENTER_DEG 86.0
-#define SERVO_RIGHT_WEAK_DEG 104.0
-#define SERVO_RIGHT_STRONG_DEG 122.0
+#define SERVO_RIGHT_WEAK_DEG 106.0
+#define SERVO_RIGHT_STRONG_DEG 126.0
 #define SERVO_MIN_PULSE_US 500.0
 #define SERVO_MAX_PULSE_US 2400.0
 #define SERVO_FULL_SWEEP_DEG 180.0

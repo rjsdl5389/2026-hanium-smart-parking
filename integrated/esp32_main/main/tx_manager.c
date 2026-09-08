@@ -1,5 +1,6 @@
 #include "tx_manager.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -20,6 +21,10 @@ typedef struct {
 static const char *TAG = "TX";
 static QueueHandle_t s_high_queue;
 static QueueHandle_t s_latest_status_queue;
+static portMUX_TYPE s_stats_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_high_enqueued;
+static uint32_t s_high_dropped;
+static uint32_t s_status_published;
 
 static bool make_message(const char *line, tx_message_t *message)
 {
@@ -42,9 +47,16 @@ bool tx_manager_enqueue_high(const char *line)
     if (!make_message(line, &message)) return false;
 
     if (xQueueSend(s_high_queue, &message, 0) != pdTRUE) {
+        taskENTER_CRITICAL(&s_stats_lock);
+        s_high_dropped++;
+        taskEXIT_CRITICAL(&s_stats_lock);
         ESP_LOGE(TAG, "High-priority TX queue full");
         return false;
     }
+
+    taskENTER_CRITICAL(&s_stats_lock);
+    s_high_enqueued++;
+    taskEXIT_CRITICAL(&s_stats_lock);
 
     return true;
 }
@@ -54,7 +66,13 @@ bool tx_manager_overwrite_latest_status(const char *line)
     tx_message_t message;
     if (!make_message(line, &message)) return false;
 
-    return xQueueOverwrite(s_latest_status_queue, &message) == pdTRUE;
+    const bool queued = xQueueOverwrite(s_latest_status_queue, &message) == pdTRUE;
+    if (queued) {
+        taskENTER_CRITICAL(&s_stats_lock);
+        s_status_published++;
+        taskEXIT_CRITICAL(&s_stats_lock);
+    }
+    return queued;
 }
 
 void tx_manager_clear(void)
@@ -63,7 +81,7 @@ void tx_manager_clear(void)
     if (s_latest_status_queue) (void)xQueueReset(s_latest_status_queue);
 }
 
-static void transmit_one(const tx_message_t *message)
+static bool transmit_one(const tx_message_t *message)
 {
     const int send_result = socket_transport_send_line_if_current(
         message->line,
@@ -75,12 +93,16 @@ static void transmit_one(const tx_message_t *message)
         ESP_LOGW(TAG, "Socket send failed; closing active socket");
         socket_transport_force_close();
     }
+    return send_result == 0;
 }
 
 static void transmit_task(void *argument)
 {
     (void)argument;
     tx_message_t message;
+    TickType_t last_summary = xTaskGetTickCount();
+    uint32_t sent_ok = 0;
+    uint32_t sent_failed = 0;
 
     while (true) {
         /*
@@ -100,18 +122,38 @@ static void transmit_task(void *argument)
                 &message,
                 pdMS_TO_TICKS(10)
             ) == pdTRUE) {
-            transmit_one(&message);
+            if (transmit_one(&message)) sent_ok++;
+            else sent_failed++;
             vTaskDelay(pdMS_TO_TICKS(1));
-            continue;
-        }
-
-        if (xQueueReceive(
+        } else if (xQueueReceive(
                 s_latest_status_queue,
                 &message,
                 0
             ) == pdTRUE) {
-            transmit_one(&message);
+            if (transmit_one(&message)) sent_ok++;
+            else sent_failed++;
             vTaskDelay(pdMS_TO_TICKS(1));
+        }
+
+        const TickType_t now = xTaskGetTickCount();
+        if (now - last_summary >= pdMS_TO_TICKS(10000)) {
+            uint32_t high_enqueued;
+            uint32_t high_dropped;
+            uint32_t status_published;
+            taskENTER_CRITICAL(&s_stats_lock);
+            high_enqueued = s_high_enqueued;
+            high_dropped = s_high_dropped;
+            status_published = s_status_published;
+            taskEXIT_CRITICAL(&s_stats_lock);
+            ESP_LOGI(TAG,
+                     "summary sent_ok=%" PRIu32 " sent_failed=%" PRIu32
+                     " high_enqueued=%" PRIu32 " high_dropped=%" PRIu32
+                     " status_published=%" PRIu32 " high_depth=%u status_pending=%u",
+                     sent_ok, sent_failed, high_enqueued, high_dropped,
+                     status_published,
+                     (unsigned)uxQueueMessagesWaiting(s_high_queue),
+                     (unsigned)uxQueueMessagesWaiting(s_latest_status_queue));
+            last_summary = now;
         }
     }
 }
@@ -132,7 +174,7 @@ void tx_manager_start(void)
         "TransmitTask",
         4096,
         NULL,
-        7,
+        8,
         NULL
     );
 

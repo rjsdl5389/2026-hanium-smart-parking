@@ -56,6 +56,14 @@ typedef struct {
     uint32_t applied_control_seq;
     TickType_t last_direct_apply_tick;
     bool direct_active;
+
+    /* REMOTE_DIRECT encoder-based breakaway assist. */
+    int64_t stall_last_encoder_count;
+    TickType_t stall_last_motion_tick;
+    TickType_t stall_boost_until_tick;
+    int stall_motion_sign;
+    bool stall_tracking;
+    bool stall_boost_used;
 } vehicle_context_t;
 
 static vehicle_context_t s_context;
@@ -91,6 +99,14 @@ static void invalidate_direct_locked(void)
     clear_direct_slot();
     s_context.direct_active = false;
     s_context.last_direct_apply_tick = 0;
+
+    s_context.stall_last_encoder_count = 0;
+    s_context.stall_last_motion_tick = 0;
+    s_context.stall_boost_until_tick = 0;
+    s_context.stall_motion_sign = 0;
+    s_context.stall_tracking = false;
+    s_context.stall_boost_used = false;
+
     s_context.snapshot.applied_throttle = 0.0;
     s_context.snapshot.applied_steering = 0.0;
     s_context.snapshot.motor_pwm = 0;
@@ -618,14 +634,73 @@ static void apply_direct_control_locked(const direct_control_slot_t *slot)
     s_context.applied_control_seq = slot->control_seq;
     s_context.snapshot.latest_control_seq = slot->control_seq;
 
+    const TickType_t now = xTaskGetTickCount();
+    const int64_t encoder_now = encoder_get_count();
+
+    const int motion_sign =
+        slot->throttle > MOTOR_DEADBAND_THROTTLE ? 1 :
+        slot->throttle < -MOTOR_DEADBAND_THROTTLE ? -1 : 0;
+
+    bool stall_boost = false;
+
+    if (motion_sign == 0) {
+        s_context.stall_tracking = false;
+        s_context.stall_boost_used = false;
+        s_context.stall_boost_until_tick = 0;
+        s_context.stall_motion_sign = 0;
+    } else if (!s_context.stall_tracking ||
+               motion_sign != s_context.stall_motion_sign) {
+        s_context.stall_tracking = true;
+        s_context.stall_motion_sign = motion_sign;
+        s_context.stall_last_encoder_count = encoder_now;
+        s_context.stall_last_motion_tick = now;
+        s_context.stall_boost_until_tick = 0;
+        s_context.stall_boost_used = false;
+    } else if (encoder_now != s_context.stall_last_encoder_count) {
+        /* Encoder movement immediately cancels/resets the stall episode. */
+        s_context.stall_last_encoder_count = encoder_now;
+        s_context.stall_last_motion_tick = now;
+        s_context.stall_boost_until_tick = 0;
+        s_context.stall_boost_used = false;
+    } else if (s_context.stall_boost_until_tick != 0 &&
+               now < s_context.stall_boost_until_tick) {
+        stall_boost = true;
+    } else if (!s_context.stall_boost_used &&
+               (now - s_context.stall_last_motion_tick) >=
+                   pdMS_TO_TICKS(DIRECT_STALL_TIMEOUT_MS)) {
+        s_context.stall_boost_used = true;
+        s_context.stall_boost_until_tick =
+            now + pdMS_TO_TICKS(DIRECT_STALL_BOOST_MS);
+        stall_boost = true;
+
+        ESP_LOGW(TAG,
+                 "DIRECT stall: encoder=%" PRId64
+                 " -> boost pwm=%d for %dms",
+                 encoder_now,
+                 DIRECT_STALL_BOOST_PWM,
+                 DIRECT_STALL_BOOST_MS);
+    }
+
     actuator_output_t out;
-    actuator_apply_direct(slot->throttle, slot->steering, &out);
+
+    if (stall_boost) {
+        actuator_apply_direct_with_min_pwm(
+            slot->throttle,
+            slot->steering,
+            DIRECT_STALL_BOOST_PWM,
+            &out);
+    } else {
+        actuator_apply_direct(
+            slot->throttle,
+            slot->steering,
+            &out);
+    }
     s_context.snapshot.applied_throttle = out.applied_throttle;
     s_context.snapshot.applied_steering = out.applied_steering;
     s_context.snapshot.motor_pwm = out.motor_pwm;
     s_context.snapshot.motor_direction = out.motor_direction;
     s_context.snapshot.servo_angle_deg = out.servo_angle_deg;
-    s_context.last_direct_apply_tick = xTaskGetTickCount();
+    s_context.last_direct_apply_tick = now;
     s_context.direct_active = true;
 
     const vehicle_state_t prev = s_context.snapshot.state;

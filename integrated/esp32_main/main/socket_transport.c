@@ -1,16 +1,21 @@
 #include "socket_transport.h"
 
+#include <errno.h>
+#include <inttypes.h>
 #include <stddef.h>
 #include <string.h>
 
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "lwip/sockets.h"
 
 static SemaphoreHandle_t s_socket_mutex;
 static int s_socket_fd = -1;
 static uint32_t s_generation;
 static portMUX_TYPE s_generation_lock = portMUX_INITIALIZER_UNLOCKED;
+static const char *TAG = "SOCKET_TX";
 
 static void bump_generation(void)
 {
@@ -24,6 +29,7 @@ static int send_all(int fd, const char *data, size_t length)
     size_t sent_total = 0;
     while (sent_total < length) {
         const int sent = send(fd, data + sent_total, length - sent_total, 0);
+        if (sent < 0 && errno == EINTR) continue;
         if (sent <= 0) return -1;
         sent_total += (size_t)sent;
     }
@@ -101,10 +107,21 @@ int socket_transport_send_line_if_current(const char *line, uint32_t generation)
     xSemaphoreTake(s_socket_mutex, portMAX_DELAY);
     const uint32_t current_generation = socket_transport_get_generation();
     if (s_socket_fd >= 0 && generation == current_generation) {
+        const TickType_t started = xTaskGetTickCount();
         const size_t length = strlen(line);
         if (send_all(s_socket_fd, line, length) == 0 &&
             send_all(s_socket_fd, "\n", 1) == 0) {
             result = 0;
+        } else {
+            ESP_LOGW(TAG, "send failed generation=%" PRIu32 " errno=%d",
+                     generation, errno);
+        }
+        const uint32_t elapsed_ms = (uint32_t)(
+            (xTaskGetTickCount() - started) * portTICK_PERIOD_MS);
+        if (elapsed_ms >= 100) {
+            ESP_LOGW(TAG, "slow send generation=%" PRIu32
+                     " bytes=%u elapsed_ms=%" PRIu32 " result=%d",
+                     generation, (unsigned)(length + 1), elapsed_ms, result);
         }
     }
     xSemaphoreGive(s_socket_mutex);

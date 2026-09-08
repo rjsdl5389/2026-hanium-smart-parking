@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
+#include "lwip/tcp.h"
 
 #include "app_config.h"
 #include "protocol.h"
@@ -56,6 +57,9 @@ static int connect_to_server(void)
                      &receive_timeout, sizeof(receive_timeout));
     (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
                      &send_timeout, sizeof(send_timeout));
+    const int enabled = 1;
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled));
+    (void)setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enabled, sizeof(enabled));
 
     struct sockaddr_in address = {
         .sin_family = AF_INET,
@@ -86,7 +90,17 @@ static void process_line(const char *line)
         return;
     }
 
-    ESP_LOGI(TAG, "RX type=%s", protocol_message_type_to_string(message.type));
+    /* HEARTBEAT and DIRECT_CONTROL are high-rate streams.  INFO logging every
+     * packet adds synchronous UART work to the same CPU that must drain TCP.
+     * Reliable/session messages remain visible; streams are DEBUG-only. */
+    if (message.type == PROTOCOL_MSG_HEARTBEAT ||
+        message.type == PROTOCOL_MSG_DIRECT_CONTROL) {
+        ESP_LOGD(TAG, "RX type=%s",
+                 protocol_message_type_to_string(message.type));
+    } else {
+        ESP_LOGI(TAG, "RX type=%s",
+                 protocol_message_type_to_string(message.type));
+    }
 
     if (message.type == PROTOCOL_MSG_HEARTBEAT) {
         if (vehicle_control_session_matches(message.session_id)) {
