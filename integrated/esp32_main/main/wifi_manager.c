@@ -25,8 +25,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     }
 
     if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *disconnected =
+            (const wifi_event_sta_disconnected_t *)event_data;
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-        ESP_LOGW(TAG, "Wi-Fi disconnected; reconnecting");
+        ESP_LOGW(TAG, "Wi-Fi disconnected reason=%u rssi=%d; reconnecting",
+                 disconnected ? (unsigned)disconnected->reason : 0U,
+                 disconnected ? (int)disconnected->rssi : 0);
         (void)esp_wifi_connect();
         return;
     }
@@ -34,6 +38,15 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     if (base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *got_ip = (const ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "IPv4 acquired: " IPSTR, IP2STR(&got_ip->ip_info.ip));
+        wifi_ap_record_t ap = {0};
+        wifi_bandwidth_t bandwidth = WIFI_BW20;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            (void)esp_wifi_get_bandwidth(WIFI_IF_STA, &bandwidth);
+            ESP_LOGI(TAG, "AP channel=%u bandwidth=%s rssi=%d auth=%d",
+                     (unsigned)ap.primary,
+                     bandwidth == WIFI_BW20 ? "HT20" : "HT40",
+                     (int)ap.rssi, (int)ap.authmode);
+        }
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
@@ -63,6 +76,11 @@ void wifi_manager_init(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &config));
     ESP_ERROR_CHECK(esp_wifi_start());
+    /* The Windows mobile hotspot shares one physical radio with the laptop's
+     * infrastructure uplink.  Keep the safety-control STA on 20 MHz so a
+     * strong-RSSI link does not also occupy a 40 MHz-wide, interference-prone
+     * 2.4 GHz channel.  This changes only RF bandwidth, not timeout policy. */
+    ESP_ERROR_CHECK(esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW20));
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
 
     ESP_LOGI(TAG, "Connecting to SSID: %s", WIFI_SSID);

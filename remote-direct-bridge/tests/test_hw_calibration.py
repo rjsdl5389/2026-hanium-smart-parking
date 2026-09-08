@@ -14,26 +14,26 @@ MockEsp32 = mock_module.MockEsp32
 
 class HardwareCalibrationTests(unittest.TestCase):
     def test_piecewise_servo_points(self):
-        self.assertAlmostEqual(MockEsp32.steering_to_angle(-1.0), 50.0)
-        self.assertAlmostEqual(MockEsp32.steering_to_angle(-0.5), 68.0)
+        self.assertAlmostEqual(MockEsp32.steering_to_angle(-1.0), 46.0)
+        self.assertAlmostEqual(MockEsp32.steering_to_angle(-0.5), 66.0)
         self.assertAlmostEqual(MockEsp32.steering_to_angle(0.0), 86.0)
-        self.assertAlmostEqual(MockEsp32.steering_to_angle(0.5), 104.0)
-        self.assertAlmostEqual(MockEsp32.steering_to_angle(1.0), 122.0)
+        self.assertAlmostEqual(MockEsp32.steering_to_angle(0.5), 106.0)
+        self.assertAlmostEqual(MockEsp32.steering_to_angle(1.0), 126.0)
 
     def test_8bit_pwm_profiles(self):
         self.assertEqual(MockEsp32.throttle_to_pwm(0.0, 0.0), 0)
-        self.assertEqual(MockEsp32.throttle_to_pwm(1.0, 0.0), 27)
-        self.assertEqual(MockEsp32.throttle_to_pwm(1.0, 0.5), 45)
-        self.assertEqual(MockEsp32.throttle_to_pwm(1.0, 1.0), 55)
-        self.assertEqual(MockEsp32.throttle_to_pwm(0.1, 0.0), 16)
-        self.assertEqual(MockEsp32.throttle_to_pwm(0.1, 0.5), 36)
+        self.assertEqual(MockEsp32.throttle_to_pwm(1.0, 0.0), 25)
+        self.assertEqual(MockEsp32.throttle_to_pwm(1.0, 0.5), 43)
+        self.assertEqual(MockEsp32.throttle_to_pwm(1.0, 1.0), 54)
+        self.assertEqual(MockEsp32.throttle_to_pwm(0.1, 0.0), 17)
+        self.assertEqual(MockEsp32.throttle_to_pwm(0.1, 0.5), 35)
 
     def test_reverse_uses_same_calibrated_profile(self):
         esp = MockEsp32()
         esp.apply_direct(-1.0, 0.0)
         self.assertEqual(esp.applied_throttle, -1.0)
         self.assertEqual(esp.motor_direction, "REVERSE")
-        self.assertEqual(esp.motor_pwm, 27)
+        self.assertEqual(esp.motor_pwm, 25)
 
     def test_remote_status_with_encoder_stays_under_512_bytes(self):
         esp = MockEsp32()
@@ -45,7 +45,7 @@ class HardwareCalibrationTests(unittest.TestCase):
         self.assertLessEqual(len(line), 512)
 
 
-class V53TrackedConfigurationTests(unittest.TestCase):
+class CurrentConfigurationContractTests(unittest.TestCase):
     def test_tracked_example_matches_verified_and_safe_defaults(self):
         firmware = (
             Path(__file__).resolve().parents[2]
@@ -64,20 +64,28 @@ class V53TrackedConfigurationTests(unittest.TestCase):
         self.assertIn("#define MOTOR_FORWARD_DIR_LEVEL 1", text)
         self.assertIn("#define MOTOR_REVERSE_DIR_LEVEL 0", text)
         self.assertIn("#define ENCODER_DIRECTION_SIGN -1", text)
-        self.assertIn('#define FIRMWARE_VERSION "0.5.3-logic-hardening"', text)
-        self.assertIn("#define PWM_FORWARD_DEFAULT 27", text)
-        self.assertIn("#define PWM_TURN_DEFAULT 45", text)
-        self.assertIn("#define PWM_STRONG_TURN_DEFAULT 55", text)
+        self.assertIn('#define FIRMWARE_VERSION "0.5.6-transport-rto1000"', text)
+        self.assertIn("#define PWM_FORWARD_MIN 16", text)
+        self.assertIn("#define PWM_FORWARD_DEFAULT 25", text)
+        self.assertIn("#define PWM_TURN_MIN 34", text)
+        self.assertIn("#define PWM_TURN_DEFAULT 43", text)
+        self.assertIn("#define PWM_STRONG_TURN_MIN 40", text)
+        self.assertIn("#define PWM_STRONG_TURN_DEFAULT 54", text)
+        self.assertIn("#define DIRECT_STALL_TIMEOUT_MS 2000", text)
+        self.assertIn("#define DIRECT_STALL_BOOST_MS 300", text)
+        self.assertIn(
+            "#define DIRECT_STALL_BOOST_PWM PWM_STRONG_TURN_DEFAULT", text
+        )
         self.assertIn("#define STOP_MOTOR_DURING_STEER_UPDATE 0", text)
-        self.assertIn("#define SERVO_LEFT_STRONG_DEG 50.0", text)
-        self.assertIn("#define SERVO_LEFT_WEAK_DEG 68.0", text)
+        self.assertIn("#define SERVO_LEFT_STRONG_DEG 46.0", text)
+        self.assertIn("#define SERVO_LEFT_WEAK_DEG 66.0", text)
         self.assertIn("#define SERVO_CENTER_DEG 86.0", text)
-        self.assertIn("#define SERVO_RIGHT_WEAK_DEG 104.0", text)
-        self.assertIn("#define SERVO_RIGHT_STRONG_DEG 122.0", text)
+        self.assertIn("#define SERVO_RIGHT_WEAK_DEG 106.0", text)
+        self.assertIn("#define SERVO_RIGHT_STRONG_DEG 126.0", text)
 
         vehicle_control = firmware.parent / "vehicle_control.c"
         vehicle_text = vehicle_control.read_text(encoding="utf-8")
-        self.assertIn("#if !ENABLE_WAYPOINT_AUTO_CONTROL", vehicle_text)
+        self.assertIn("actuator_start_motion();", vehicle_text)
         self.assertIn("COMMAND_RESULT_HOLD", vehicle_text)
 
 

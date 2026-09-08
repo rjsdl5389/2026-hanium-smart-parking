@@ -1,5 +1,39 @@
 # 문제 해결 기록
 
+## 2026-09-07 production 통합 문제 요약
+
+이 절은 최종 `AUTO_HOST → DIRECT_CONTROL → REMOTE_DIRECT` 경로에서 실제 E2E로
+확인한 문제를 요약한다. 이후의 `WAYPOINT/GO/WAIT` 중심 항목은 초기 설계·하드웨어
+이력이다.
+
+| 현상 | 확인된 원인 | 적용 계약 |
+|---|---|---|
+| 첫 slot route가 불가능하면 pipeline 종료 | `InfeasibleRouteError`가 candidate 경계를 넘어 전파 | candidate만 reject하고 다음 slot 검사; 전부 실패하면 zero + WAIT/FAULT, Pose는 route 생성 전에 기록 |
+| 잘못된 `LAST_VALID` heading으로 mission 시작 | 일반 control용 heading fallback이 critical planning에도 허용됨 | initial allocation/handoff/setup/rear/recovery route 생성은 fresh/recent trusted heading 요구 |
+| handoff를 20–25mm 지나친 뒤 동일 waypoint replan 반복 | terminal completion보다 exact reacquisition/deviation이 우선 | terminal capture → STOP → fresh Pose → parking/setup 전환; 실질적으로 동일한 replan 반복 차단 |
+| rear route 첫 waypoint에서 즉시 `PATH_DEVIATION` 반복 | route 교체 때 이전 acquisition/best-distance 상태와 첫 waypoint 조건 불일치 | route-load state reset과 geometry 기반 first-waypoint acquisition 적용 |
+| 영상상 안전한데 map boundary stop 반복 | 차량 physical footprint의 작은 calibration/heading 오차를 hard violation으로 처리 | physical footprint 유지, safety 판정에만 20mm hard margin과 measurement uncertainty 적용 |
+| 전진↔후진 또는 route 교체 직후 stale Pose로 재출발 | 같은 observation으로 stop과 새 direction command가 연속 계산될 수 있음 | zero command 후 controller Pose를 clear하고 새 camera frame 전까지 hold |
+| `COMM_TIMEOUT` 후 stale command/session 재개 위험 | socket 재연결과 mission context 복구가 분리되지 않음 | zero latch, old session 폐기, HELLO/new session, RESET, SET_MODE, fresh Pose/heading, context 검증, 현재 Pose 재계획 |
+| FINAL route는 끝났지만 `FINAL_ALIGNMENT` 반복 | terminal waypoint tolerance와 postcondition의 정밀도 불일치 | 물리 footprint/depth/heading 기반 `PARKED` acceptance와 final-alignment terminal tolerance를 일관화하고 횟수 제한 |
+
+### 정적 점유 차량 관련 주의
+
+Backend final release는 CAR_ID binding이 없는 정적 camera track을 slot geometry와
+stationary/연속 관측으로 `VISION_OCCUPIED`로 확정한다. 확정되면 allocator가
+그 슬롯을 제외하고, 차량은 `STATIC_PARKED` planning obstacle로 반영된다.
+
+점유 확정 전 allocation gate는 없다. 따라서 다음 순서를 지켜야 한다.
+
+1. 정적 차량을 슬롯에 배치한다.
+2. event/log에서 `VISION_SLOT_OCCUPIED` 확정을 본다.
+3. 그 다음에 자율주행 차량을 활성화해 allocation을 시작한다.
+
+명령 순서를 바꾸면 점유 확정보다 allocation이 먼저 실행될 수 있다. 이 기능은
+두 차량 동시 자율주행 검증을 의미하지 않는다.
+
+---
+
 ## 1. 문서 목적
 
 본 문서는 자율주행 기반 지능형 주차 운영 시스템 개발 중 발생한 하드웨어·펌웨어·통신·인식·통합 문제를 기록하고, 재현 가능한 점검 순서를 정리하기 위한 문서이다.

@@ -7,6 +7,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+/* Local app_config.h is gitignored; keep old local configs buildable. */
+#ifndef PWM_STRONG_TURN_MIN
+#define PWM_STRONG_TURN_MIN PWM_TURN_MIN
+#endif
+
 #if ENABLE_ACTUATOR_OUTPUT
 #include "driver/gpio.h"
 #include "driver/ledc.h"
@@ -37,8 +42,8 @@ static double lerpd(double a, double b, double t)
 }
 
 /*
- * Piecewise steering calibration from the 2026-07-29 bench test:
- *   -1.0 -> 30°, -0.5 -> 60°, 0 -> 86°, +0.5 -> 112°, +1.0 -> 122°.
+ * Piecewise steering calibration from the current verified CAR_01 contract:
+ *   -1.0 -> 46°, -0.5 -> 66°, 0 -> 86°, +0.5 -> 106°, +1.0 -> 126°.
  */
 static double steering_to_angle(double steering)
 {
@@ -56,14 +61,14 @@ static double steering_to_angle(double steering)
 }
 
 /*
- * Steering-dependent motor profile, also from the 2026-07-29 bench test:
- *   straight: min 15, default 27
- *   weak turn (|steering|=0.5): min 35, default 45
- *   strong turn (|steering|=1.0): default 55
+ * Steering-dependent motor profile (latest real-car calibration):
+ *   straight: min 16, default 25
+ *   weak turn (|steering|=0.5): min 34, default 43
+ *   strong turn (|steering|=1.0): min 40, default 54
  *
- * A normalized throttle magnitude of 1.0 selects the calibrated default duty
- * for the current steering profile. Any non-zero value above the deadband is
- * interpolated from that profile's minimum to default duty.
+ * 이전 구현은 |steering|=1.0에서 min==default==strong default가 되어 host
+ * throttle이 완전히 무시됐다. 아래 mapping은 강조향에서도 최소 토크 floor와
+ * throttle-controlled range를 분리해 저속 정밀주차/후진 recovery를 가능하게 한다.
  */
 static int throttle_to_duty(double throttle, double steering)
 {
@@ -80,7 +85,7 @@ static int throttle_to_duty(double throttle, double steering)
         default_duty = lerpd(PWM_FORWARD_DEFAULT, PWM_TURN_DEFAULT, t);
     } else {
         const double t = (abs_steering - 0.5) / 0.5;
-        min_duty = lerpd(PWM_TURN_MIN, PWM_STRONG_TURN_DEFAULT, t);
+        min_duty = lerpd(PWM_TURN_MIN, PWM_STRONG_TURN_MIN, t);
         default_duty = lerpd(PWM_TURN_DEFAULT, PWM_STRONG_TURN_DEFAULT, t);
     }
 
@@ -218,7 +223,11 @@ void actuator_start_motion(void)
     ESP_LOGI(TAG, "MOVING (WAYPOINT_AUTO); direct output governed by control task");
 }
 
-void actuator_apply_direct(double throttle, double steering, actuator_output_t *out)
+static void actuator_apply_direct_internal(
+    double throttle,
+    double steering,
+    int min_motor_pwm,
+    actuator_output_t *out)
 {
     double effective_throttle = clampd(throttle, -1.0, 1.0);
     const double effective_steering = clampd(steering, -1.0, 1.0);
@@ -232,7 +241,14 @@ void actuator_apply_direct(double throttle, double steering, actuator_output_t *
 #endif
     }
 
-    const int duty = throttle_to_duty(effective_throttle, effective_steering);
+    int duty = throttle_to_duty(effective_throttle, effective_steering);
+
+    if (duty > 0 && min_motor_pwm > duty) {
+        duty = min_motor_pwm;
+        if (duty > MOTOR_PWM_MAX_DUTY) {
+            duty = MOTOR_PWM_MAX_DUTY;
+        }
+    }
     const double angle = steering_to_angle(effective_steering);
 
 #if ENABLE_ACTUATOR_OUTPUT
@@ -260,6 +276,24 @@ void actuator_apply_direct(double throttle, double steering, actuator_output_t *
         out->applied_throttle = effective_throttle;
         out->applied_steering = effective_steering;
     }
+}
+
+void actuator_apply_direct(double throttle, double steering, actuator_output_t *out)
+{
+    actuator_apply_direct_internal(throttle, steering, 0, out);
+}
+
+void actuator_apply_direct_with_min_pwm(
+    double throttle,
+    double steering,
+    int min_motor_pwm,
+    actuator_output_t *out)
+{
+    actuator_apply_direct_internal(
+        throttle,
+        steering,
+        min_motor_pwm,
+        out);
 }
 
 bool actuator_output_enabled(void)

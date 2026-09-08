@@ -48,15 +48,15 @@ class WasdLogicTests(unittest.TestCase):
         self.assertEqual(advance_steering(0.7, {"a"}), -0.1)
         self.assertEqual(advance_steering(-0.7, {"d"}), 0.1)
 
-    def test_expected_calibration_v53(self):
-        self.assertEqual(expected_actuator(1.0, 0.0), (27, 86.0, "FORWARD"))
-        self.assertEqual(expected_actuator(1.0, 0.5), (45, 104.0, "FORWARD"))
-        self.assertEqual(expected_actuator(-1.0, -1.0), (55, 50.0, "REVERSE"))
+    def test_expected_current_car01_calibration(self):
+        self.assertEqual(expected_actuator(1.0, 0.0), (25, 86.0, "FORWARD"))
+        self.assertEqual(expected_actuator(1.0, 0.5), (43, 106.0, "FORWARD"))
+        self.assertEqual(expected_actuator(-1.0, -1.0), (54, 46.0, "REVERSE"))
 
     def test_intermediate_steering_is_interpolated(self):
         duty, angle, direction = expected_actuator(1.0, 0.1)
-        self.assertEqual(duty, 31)
-        self.assertAlmostEqual(angle, 89.6)
+        self.assertEqual(duty, 29)
+        self.assertAlmostEqual(angle, 90.0)
         self.assertEqual(direction, "FORWARD")
 
 

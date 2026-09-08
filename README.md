@@ -1,161 +1,135 @@
 # 2026 한이음 자율주행 기반 지능형 주차 운영 시스템
 
-> 고정 카메라 기반 전역 인식 · 주차면 배정 · 경로/waypoint 생성 · 노트북 상위 제어 · ESP32 차량 구동을 통합하는 축소형 스마트 주차 테스트베드
+> 고정 카메라 전역 인식과 노트북 기반 폐루프 제어로 RC카를 주차시키는 축소형 스마트 주차 테스트베드
 
-## 현재 기준 상태 — 2026-08-10
+최종 문서 기준일: **2026-09-08**
 
-현재 차량 제어의 **주 통합 경로는 AUTO_HOST**다.
+## 최종 시스템 구조
 
 ```text
 고정 카메라
-→ YOLO / OpenCV / Homography
+→ YOLO / OpenCV
+→ Homography
 → Vehicle Pose (x, y, heading)
-→ 주차면 배정 / Route / Waypoint
-→ 노트북 HostController
-→ throttle / steering 계산
+→ 슬롯 상태 / 슬롯 배정
+→ Route / Waypoint
+→ HostController
+→ throttle / steering
 → Wi-Fi TCP / NDJSON / DIRECT_CONTROL
 → ESP32 REMOTE_DIRECT
-→ DC모터 / 서보 / 엔코더
+→ DC Motor / Servo
+→ 차량 이동
+→ 카메라 재관측
 ```
 
-ESP32가 전역 waypoint 판단을 수행하는 구조가 아니라, **노트북이 카메라 Pose와 waypoint를 이용해 제어값을 계산하고 ESP32는 저수준 구동·즉시 안전정지를 담당**하는 구조를 현재 통합 기준으로 사용한다.
+노트북은 전역 인식, 슬롯 배정, 경로 생성, Pose 기반 폐루프 제어와 복구·재계획을 담당한다. ESP32는 세션이 유효한 `DIRECT_CONTROL`만 액추에이터에 적용하고, 통신 또는 명령 스트림이 끊기면 독립적으로 즉시 정지한다.
 
-기존 `WAYPOINT`, `WAIT`, `GO` 프로토콜/펌웨어 코드는 호환성 및 대안 비교를 위해 유지한다. SW팀의 waypoint 구현 방식과 최종 통합 시 비교 후 단일 구조로 확정한다.
+**Production 자동주행 경로는 `AUTO_HOST → DIRECT_CONTROL → REMOTE_DIRECT`다.** `WAYPOINT_AUTO`와 `WAYPOINT`/`GO`/`WAIT` 처리는 호환성과 실험 이력 때문에 남아 있지만 production wire에는 사용하지 않는다.
 
-## 실차 검증 완료
+## 제어와 안전의 핵심
 
-- 노트북 ↔ ESP32 Wi-Fi/TCP 연결
-- `HELLO` / `HELLO_ACK` / `STATUS` / `HEARTBEAT`
-- `SET_MODE → REMOTE_DIRECT`
-- `DIRECT_CONTROL` 스트리밍
-- 통신단절/재접속 안전정지
-- ESP32 재부팅 후 세션 재동기화
-- MANUAL_WASD 실차 전진/후진/좌우 조향
-- STOP/HOLD 및 키 해제 시 0/중앙 복귀
-- MANUAL_WASD ↔ AUTO_HOST 전환 구조
-- AUTO 전환 시 fresh camera pose 전까지 `AUTO_PENDING`
-- 수동 제어 전용 `max_throttle=1.0`, reverse 허용
-- AUTO_HOST 기본 `max_throttle=0.40`, reverse 비허용 유지
-- 최종 회귀 테스트 **164/164 PASS**
+- `HostController`가 fresh camera Pose와 현재 waypoint로 heading error, arc cross-track error, curvature feed-forward, throttle/steering을 계산한다.
+- 실행 가능한 모든 production route는 load 전에 map, 차체 footprint, 점유 슬롯, 다른 차량 footprint, curvature, waypoint jump와 첫 waypoint 도달가능성을 검사한다.
+- stale/invalid Pose는 non-zero 출력을 허용하지 않는다. 후진 주차 중 일시적인 heading 손실도 먼저 zero로 정지하고 bounded fresh-heading 복구 또는 재계획으로 전환한다.
+- forward↔reverse 전환에는 zero-command interlock을 넣고, 전환을 만든 관측을 폐기해 새 camera observation 전에는 반대 방향으로 출발하지 않는다.
+- 통신 장애 시 Backend와 ESP32가 각각 zero/safeStop을 수행한다. 재접속 뒤에는 새 `session_id`와 `boot_id`를 검증하고 `RESET → SET_MODE(REMOTE_DIRECT)` 협상, fresh Pose 확보, 현재 위치 기준 재계획을 거쳐야 한다.
+- 최종 `PARKED`는 위치 하나만으로 결정하지 않는다. 물리적 정지 확인, 슬롯 footprint/depth/heading 검사와 서로 다른 fresh Pose 3개 연속 확인을 사용한다.
 
-테스트 구성:
+자세한 내용은 [시스템 아키텍처](docs/system_architecture.md), [제어 상태머신](docs/control_state_machine.md), [통신 프로토콜](docs/communication_protocol.md), [안전 계약](docs/safety_and_failsafe.md)을 참고한다.
+
+## 현재 구현 상태
+
+| 영역 | 상태 | 범위 |
+|---|---|---|
+| Camera→Pose→Route→HostController→ESP32 | 완료·실차 검증 | 단일 AUTO_HOST 차량의 후면주차 |
+| Parking setup/recovery/replanning | 완료·실차 검증 | bounded 시도, 불가능하면 zero/WAIT/FAULT |
+| TCP/NDJSON session recovery | 완료·HIL 검증 | zero latch, RESET/SET_MODE, stale ACK 차단 |
+| Route preflight safety | 완료·자동 회귀 | unsafe route는 load 전에 reject |
+| Dashboard REST/WebSocket adapter | 구현 완료 | Redis는 배포 시 선택, 제어 안전 경로와 분리 |
+| PPO 환경·정책 | 구현·시뮬레이션 검증 | model/dependency가 없으면 deterministic heuristic |
+| 정적 수동 배치 차량의 슬롯 자동 점유 | 구현 완료·운용 순서 필요 | `VISION_OCCUPIED` 확정 → allocator 제외 → `STATIC_PARKED` 장애물 |
+| 다중 차량 자율주행 | 부분 완료 | 두 번째 차량 zero 대기와 장애물 검사는 있으나 동시 자율주행 검증 아님 |
+
+정지 이력과 연속 관측으로 슬롯 점유가 확정되면 해당 슬롯은 allocator action mask에서 제외되고, 관측 Pose와 슬롯 주차 방향을 사용한 `STATIC_PARKED` 장애물로 route preflight에 남는다. 단, 점유 확정 전 allocation을 막는 gate는 아직 없다. 검증된 운용 순서는 **정적 차량 배치 → `VISION_SLOT_OCCUPIED` 확인 → 자율주행 차량 활성화**다.
+
+## 실차 E2E 증거와 표현 범위
+
+단일차량 실차에서 다음 경로가 확인됐다.
 
 ```text
-controller      32
-host_control    59
-integration     24
-comm            31
-pipeline        18
-------------------
-total          164
+GLOBAL / entry staging
+→ parking setup
+→ APPROACH → ALIGN → ENTRY → FINAL
+→ physical stop + fresh Pose evaluation
+→ PARKED_CONFIRMING 3/3
+→ PARKED
 ```
 
-## 현재 다음 단계
+대표 기록:
 
-SW팀에서 별도로 구현한 **마우스 클릭 waypoint 주행**을 최신 차량 제어/카메라 코드와 다시 연결해 종단 간 동작을 확인한다.
+- `run_20260831_002703`: A2 `PARKED`, fresh 확인 3/3
+- `run_20260903_230921`: A2 `PARKED`, stale-Pose 복구 후 완료
+- `run_20260904_000722`: B1 `PARKED`, boundary/final-alignment 복구 후 완료
+- `run_20260904_183055`, `run_20260904_183503`: entry staging부터 A2 후면주차까지 `PARKED`
 
-```text
-카메라 Pose
-→ 마우스 클릭 waypoint
-→ 최신 통합 Host/통신 계층
-→ 실제 ESP32
-→ 실제 RC카 주행
+이 증거는 **두 차량 동시 자율주행 성공**을 뜻하지 않는다. `VISION_OCCUPIED`/`STATIC_PARKED`는 Backend final release에 구현되었지만, 위 단일차량 run 목록 자체가 “정적 차량 점유 확정 후 다른 차량 주차 완료” 실차 시나리오를 입증하는 것은 아니다. 구현 상태와 실차 검증 상태를 구분해 기록한다.
+
+## PPO와 HIL runtime
+
+`rl/`에는 MaskablePPO 환경, 학습·평가 코드와 deterministic inference가 있다. production allocator는 정책 파일과 `sb3-contrib`를 모두 사용할 수 있을 때 PPO를 호출하고, 어느 하나라도 없으면 nearest-slot deterministic heuristic으로 안전하게 fallback한다. 어느 경우에도 action mask와 route preflight safety 검사는 유지된다.
+
+현재 Backend venv에는 `sb3-contrib`/`stable-baselines3`가 없어 이번 최종 회귀에서는 heuristic fallback이 사용됐다. 과거 HIL run은 policy provenance를 기록하지 않아 PPO 사용을 사후 확정할 수 없다. 따라서 보고서에는 “PPO 환경·정책 구현 및 시뮬레이션 검증”과 “HIL의 deterministic fallback”을 구분한다.
+
+## Dashboard / Redis / Django Channels
+
+- Django REST API와 `/ws/dashboard/` consumer가 구현돼 있다.
+- `REDIS_URL`이 있으면 Redis Channel Layer, 없으면 in-memory layer를 사용한다.
+- pipeline의 `DashboardBridge`는 Pose와 이벤트를 best-effort로 broadcast한다.
+- Dashboard/Redis 실패는 차량 제어 및 safe-stop 경로를 막지 않는다.
+- 프론트엔드 UI의 최종 배포·사용성 검증은 이 저장소의 실차 제어 완료와 별도다.
+
+## Production 실행
+
+실차 production은 Backend 저장소에서 mode를 명시한다.
+
+```powershell
+python manage.py run_pipeline `
+  --control-mode auto-host `
+  --parking-mode rear `
+  --calibration <validated-calibration.json> `
+  --weights <best.pt> `
+  --record runs `
+  --record-video `
+  --show
 ```
 
-이 단계에서 실제 회전반경이 여전히 크면 서보 운용각만 재조정한다. 제어 코드 구조는 먼저 유지한다.
-
-## 수동/자동 제어 모드
-
-### MANUAL_WASD
-
-ESP32가 READY가 되면 카메라나 mission이 없어도 수동제어를 사용할 수 있다.
-
-- `W`: 전진
-- `S`: 후진
-- `A/D`: 좌/우 조향
-- `Space`: STOP/HOLD
-- `F1`: MANUAL
-- `F2`: AUTO
-
-수동모드는 카메라 학습용 위치 조정, 초기 배치, 실차 점검 및 개발 중 비상 수동제어에 사용한다.
-
-### AUTO_HOST
-
-노트북이 현재 Pose와 waypoint를 바탕으로 제어값을 계산한다.
-
-MANUAL → AUTO 전환은:
-
-```text
-zero
-→ manual loop 종료
-→ AUTO_PENDING
-→ fresh camera pose 수신
-→ AUTO scheduler 시작
-→ AUTO_HOST
-```
-
-순서로 동작해 오래된 Pose에 의한 즉시 fault를 방지한다.
-
-## 하드웨어 기준
-
-| 기능 | 값 |
-|---|---:|
-| Motor PWM GPIO | 25 |
-| Motor DIR GPIO | 26 |
-| Servo PWM GPIO | 27 |
-| Encoder A/B | 34 / 35 |
-| PWM | 20 kHz, 8-bit |
-| 직진 기본 duty | 27 |
-| 약회전 기본 duty | 45 |
-| 강회전 기본 duty | 55 |
-| Servo center | 86° |
-| Left weak / strong | 68° / 50° |
-| Right weak / strong | 104° / 122° |
-| 기계 한계 확인값 | 약 22° / 130° |
-
-기계 한계값은 정상 운용값으로 사용하지 않는다.
+가중치, calibration, 영상과 run 산출물은 로컬 증빙이며 Git에 포함하지 않는다. 실제 production Backend source of truth는 [`release/hanium-2026-final`](https://github.com/hanium-2026-project/backend/tree/release/hanium-2026-final) branch의 [`15043f3`](https://github.com/hanium-2026-project/backend/commit/15043f3ec583cdab5f9519cdc3ad2e103dcf8d49)이다. generic Backend URL의 default `main`과 이 저장소의 `integrated/host`는 최종 Backend source of truth가 아니다.
 
 ## 저장소 구조
 
 ```text
 .
 ├─ README.md
-├─ docs/
+├─ docs/                         # 최종 설계·구현·시험 문서
 ├─ integrated/
-│  ├─ host/                 # 최신 노트북 통합 코드
-│  │  ├─ controller/
-│  │  ├─ host_control/
-│  │  ├─ control/
-│  │  ├─ integration/
-│  │  ├─ comm/
-│  │  ├─ pipeline/
-│  │  ├─ parking/
-│  │  └─ cv/
-│  └─ esp32_main/           # ESP-IDF 차량 펌웨어
-└─ remote-direct-bridge/    # 이전/독립 개발용 REMOTE_DIRECT 브리지
+│  ├─ host/                      # 과거 통합 스냅샷
+│  └─ esp32_main/                # CAR_01 ESP-IDF firmware
+└─ remote-direct-bridge/         # 독립 수동/HIL 검증 도구
 ```
 
-`remote-direct-bridge`는 실차 수동제어 검증 이력을 보존하는 개발 도구이며, 현재 통합 개발의 기준 코드는 `integrated/host`다.
-
-## 보안/용량 원칙
-
-다음 파일은 Git에 올리지 않는다.
-
-- 실제 `app_config.h`
-- `.env`
-- Wi-Fi 비밀번호/로컬 서버 주소
-- `.conda_backend`, venv
-- ESP-IDF `build/`, `managed_components/`
-- YOLO weight (`*.pt`) 및 영상/런타임 산출물
-- DB, cache, backup
-
-모델 weight는 별도 전달/배포하고 저장소에는 경로와 사용법만 기록한다.
+CAR_02의 encoder-disabled firmware는 별도 로컬 workspace로 분리돼 있으며 이 저장소의 CAR_01 firmware와 혼합하지 않는다.
 
 ## 주요 문서
 
-- [`docs/implementation_status.md`](docs/implementation_status.md): 현재 구현 상태의 단일 기준
-- [`docs/integration_status_2026-08-10.md`](docs/integration_status_2026-08-10.md): 이번 통합/HIL 마일스톤
-- [`docs/system_architecture.md`](docs/system_architecture.md): 현재 시스템 구조
-- [`docs/development_log.md`](docs/development_log.md): 일자별 개발 이력
-- [`docs/test_log_summary.md`](docs/test_log_summary.md): 검증 결과
-- [`docs/troubleshooting.md`](docs/troubleshooting.md): 재현 가능한 문제/해결
+- [시스템 아키텍처](docs/system_architecture.md)
+- [제어 상태머신](docs/control_state_machine.md)
+- [통신 프로토콜](docs/communication_protocol.md)
+- [구현 상태](docs/implementation_status.md)
+- [안전 및 fail-safe](docs/safety_and_failsafe.md)
+- [테스트 로그 요약](docs/test_log_summary.md)
+- [개발 로그](docs/development_log.md)
+- [트러블슈팅](docs/troubleshooting.md)
+
+## 저장소 보안/용량 원칙
+
+실제 `app_config.h`, `.env`, Wi-Fi 자격증명, 로컬 주소, venv, ESP-IDF `build/`, YOLO weights, 영상, DB와 runtime run은 commit하지 않는다.

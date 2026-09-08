@@ -35,5 +35,11 @@ void actuator_start_motion(void);
 /* REMOTE_DIRECT: map normalized throttle/steering to motor + servo output. */
 void actuator_apply_direct(double throttle, double steering, actuator_output_t *out);
 
+void actuator_apply_direct_with_min_pwm(
+    double throttle,
+    double steering,
+    int min_motor_pwm,
+    actuator_output_t *out);
+
 /* true if real GPIO output is compiled in (ENABLE_ACTUATOR_OUTPUT=1). */
 bool actuator_output_enabled(void);
